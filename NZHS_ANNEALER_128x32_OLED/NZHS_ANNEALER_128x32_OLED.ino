@@ -621,7 +621,7 @@ ISR(TIMER2_COMPA_vect){//timer2 interrupt
   	StepToggle = 1;
   }
 
-  if ((g_SystemState == STATE_ANNEALING) && (millis() >= SystemTimeTarget))
+  if ((g_SystemState == STATE_ANNEALING) && hasTimeElapsed(SystemTimeTarget, millis()))
   {
     turnAnnealerOff();
   }
@@ -636,6 +636,7 @@ ISR(TIMER2_COMPA_vect){//timer2 interrupt
 *//*-------------------------------------------------------------------------*/
 void loop()
 {
+  // Retained upstream serial-interface placeholder; no serial UI is active.
   static bool isSerialInterface = false;
   static bool start;
   static bool startPrev;
@@ -644,13 +645,13 @@ void loop()
   static bool modeKeyPrev;
   static bool upKey=0;
   static bool upKeyPrev=0;
-  static uint8_t upKeyDuration = 0x00;
-  static uint8_t modeKeyDuration = 0x00;
+  static uint8_t upKeyDuration = 0;
   static bool FanIsOn = false;
   static bool annealTimeChanged = false;
+  // Retained upstream measurement placeholder; voltage is not displayed yet.
   static uint16_t psuVoltage_mv;
   static uint16_t psuCurrent_ma;
-  static uint16_t AnnealTime_ms = EEPROM.read(0)*100; //reload last used anneal time
+  static bool manualDumpInProgress = false;
   static uint32_t cooling_timer = 0;
   static uint32_t LoopStartTime;
   static float temperature = 0;
@@ -660,6 +661,7 @@ void loop()
 
   //boot the watchdog
   wdt_reset();
+  g_ResetDiagnostics.lastSystemState = g_SystemState;
   //read keys
   LoopStartTime = millis(); // capture time when loop starts
   start = readStartButton();
@@ -667,6 +669,19 @@ void loop()
   upKey = readUpButton();
 
   temperature = readTemperature(0);
+
+  if(!isTemperatureReadingValid(temperature) &&
+     g_SystemState != STATE_TEMPERATURE_SENSOR_WARNING)
+  {
+    // An invalid temperature means the capacitor temperature is unknown.
+    // Stop safely and require a valid sensor reading before another run.
+    turnAnnealerOff();
+    closeDropGate();
+    turnStartStopLedOff();
+    g_RunSafety.cooldownRestartPending = false;
+    cooling_timer = COOLDOWN_PERIOD + millis();
+    updateSystemState(STATE_TEMPERATURE_SENSOR_WARNING);
+  }
 
   /*temperature = sensors.getTempCByIndex(0);
   sensors.requestTemperatures(); // this takes quite some time to complete ~90ms or longer. read it on the next loop*/
