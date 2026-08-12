@@ -1233,15 +1233,15 @@ void loop()
   Serial.print(F(";A;"));
 
   Serial.print(F("Anneal Time;"));
-  Serial.print(AnnealTime_ms);
+  Serial.print(g_UserSettings.annealTime_ms);
   Serial.print(F(";ms;"));
 
   Serial.print("Step count;");
-  Serial.print(StepsToGo);
+  Serial.print(getStepsToGo());
   Serial.print(F(";"));
 
   Serial.print("Steps from home;");
-  Serial.print(StepsFromHome);
+  Serial.print(getStepsFromHome());
   Serial.print(F(";"));
 
   Serial.print(F("State;"));
@@ -1256,12 +1256,12 @@ void loop()
   #endif
 
 
-  while(LoopStartTime + LOOP_TIME > millis()) // wait for the loop time to expire
+  while(!hasTimeElapsed(LoopStartTime + LOOP_TIME, millis())) // wait for the loop time to expire
   {
 
-      if((millis() & 0x00003FFF == 0x00003FFF) && (annealTimeChanged == true)) // write to EEPROM every ~16 seconds only if anneal time has changed
+      if(((millis() & 0x00003FFF) == 0x00003FFF) && (annealTimeChanged == true)) // write to EEPROM every ~16 seconds only if anneal time has changed
       {
-        EEPROM.write(0,AnnealTime_ms/100);
+        EEPROM.update(EEPROM_ADDRESS_ANNEAL_TIME,g_UserSettings.annealTime_ms/100);
         annealTimeChanged = false;
       }
   }
@@ -1269,13 +1269,554 @@ void loop()
 }
 
 /*---------------------------------------------------------------------------*/
+/*! @brief      Load EEPROM-backed settings after hardware detection.
+*//*-------------------------------------------------------------------------*/
+static void loadUserSettings(void)
+{
+  uint16_t savedAnnealTime_ms = EEPROM.read(EEPROM_ADDRESS_ANNEAL_TIME) * 100;
+  if(savedAnnealTime_ms < MIN_ANNEAL_TIME || savedAnnealTime_ms > MAX_ANNEAL_TIME)
+  {
+    g_UserSettings.annealTime_ms = MIN_ANNEAL_TIME;
+    EEPROM.update(EEPROM_ADDRESS_ANNEAL_TIME, MIN_ANNEAL_TIME / 100);
+  }
+  else
+  {
+    g_UserSettings.annealTime_ms = savedAnnealTime_ms;
+  }
+  g_UserSettings.autoRestartAfterCooldown = EEPROM.read(EEPROM_ADDRESS_AUTO_RESTART) == 1;
+  g_UserSettings.dumpButtonEnabled = EEPROM.read(EEPROM_ADDRESS_DUMP_BUTTON) == 1;
+  g_UserSettings.stoppedScreenSelection = STOPPED_SCREEN_TIME;
+  g_UserSettings.settingsScreenSelection = SETTINGS_SCREEN_AUTO_RESTART;
+  if(g_UserSettings.dumpButtonEnabled)
+  {
+    setFreeRunMode();
+  }
+}
+
+/*---------------------------------------------------------------------------*/
+/*! @brief      Reset learned current and automatic-restart state for a new run.
+*//*-------------------------------------------------------------------------*/
+static void resetRunSafetyState(void)
+{
+  g_RunSafety.cooldownRestartPending = false;
+  g_RunSafety.annealingCurrentTotal_ma = 0;
+  g_RunSafety.annealingCurrentSamples = 0;
+  g_RunSafety.restartCurrentTotal_ma = 0;
+  g_RunSafety.restartCurrentSamples = 0;
+  g_RunSafety.baselineCurrent_ma = 0;
+  g_RunSafety.ignoredCurrentCycles = 0;
+  g_RunSafety.baselineCurrentCycles = 0;
+  g_RunSafety.baselineCurrentWindowIndex = 0;
+  g_RunSafety.lowCurrentConsecutiveCycles = 0;
+}
+
+/*---------------------------------------------------------------------------*/
+/*! @brief      Enter cooldown and decide whether this cooldown may restart.
+*//*-------------------------------------------------------------------------*/
+static void enterCooldown(bool const allowAutomaticRestart, bool const cycleStopRequested)
+{
+  g_RunSafety.cooldownRestartPending = allowAutomaticRestart &&
+                                       g_UserSettings.autoRestartAfterCooldown &&
+                                       CurrentMode != MODE_SINGLE_SHOT &&
+                                       !cycleStopRequested;
+  updateSystemState(STATE_COOLDOWN);
+}
+
+/*---------------------------------------------------------------------------*/
+/*! @brief      Move to the next stopped-screen item that is available.
+*//*-------------------------------------------------------------------------*/
+static void advanceStoppedScreenSelection(void)
+{
+  g_UserSettings.stoppedScreenSelection = (tStoppedScreenSelection)((g_UserSettings.stoppedScreenSelection + 1) % STOPPED_SCREEN_SELECTION_COUNT);
+}
+
+/*---------------------------------------------------------------------------*/
+/*! @brief      Move to the next Settings screen item.
+*//*-------------------------------------------------------------------------*/
+static void advanceSettingsScreenSelection(void)
+{
+  g_UserSettings.settingsScreenSelection = (tSettingsScreenSelection)((g_UserSettings.settingsScreenSelection + 1) % SETTINGS_SCREEN_SELECTION_COUNT);
+}
+
+/*---------------------------------------------------------------------------*/
+/*! @brief      Leave a menu and restore the normal stopped screen.
+*//*-------------------------------------------------------------------------*/
+static void returnToStoppedScreen(void)
+{
+  g_UserSettings.stoppedScreenSelection = STOPPED_SCREEN_TIME;
+  updateSystemState(STATE_STOPPED);
+}
+
+/*---------------------------------------------------------------------------*/
+/*! @brief      Select free-run mode and disable the stepper feeder.
+*//*-------------------------------------------------------------------------*/
+static void setFreeRunMode(void)
+{
+  CurrentMode = MODE_FREE_RUN;
+  digitalWrite(g_FeederStepperEnPin,HIGH);
+  turnModeLedOn();
+}
+
+/*---------------------------------------------------------------------------*/
+/*! @brief      Enable or disable the manual dump button.
+*//*-------------------------------------------------------------------------*/
+static void setDumpButtonEnabled(bool const enabled)
+{
+  g_UserSettings.dumpButtonEnabled = enabled;
+  if(enabled)
+  {
+    setFreeRunMode();
+  }
+  EEPROM.update(EEPROM_ADDRESS_DUMP_BUTTON, enabled ? 1 : 0);
+}
+
+/*---------------------------------------------------------------------------*/
+/*! @brief      Cycle the operating mode and associated feeder state.
+*//*-------------------------------------------------------------------------*/
+static void cycleCurrentMode(void)
+{
+  if(g_UserSettings.dumpButtonEnabled)
+  {
+    setDumpButtonEnabled(false);
+  }
+
+  if(CurrentMode == MODE_SINGLE_SHOT)
+  {
+    setFreeRunMode();
+  }
+  else if(CurrentMode == MODE_FREE_RUN)
+  {
+    CurrentMode = MODE_AUTOMATIC;
+    digitalWrite(g_FeederStepperEnPin,LOW);
+    turnModeLedOn();
+  }
+  else
+  {
+    CurrentMode = MODE_SINGLE_SHOT;
+    digitalWrite(g_FeederStepperEnPin,HIGH);
+    turnModeLedOff();
+  }
+}
+
+/*---------------------------------------------------------------------------*/
+/*! @brief      Change the value selected on the stopped screen.
+*//*-------------------------------------------------------------------------*/
+static void updateStoppedScreenSetting(void)
+{
+  if(g_UserSettings.stoppedScreenSelection == STOPPED_SCREEN_TIME)
+  {
+    g_UserSettings.annealTime_ms = g_UserSettings.annealTime_ms >= MAX_ANNEAL_TIME ? MIN_ANNEAL_TIME : g_UserSettings.annealTime_ms + 100;
+  }
+  else if(g_UserSettings.stoppedScreenSelection == STOPPED_SCREEN_MODE)
+  {
+    cycleCurrentMode();
+  }
+  else if(g_UserSettings.stoppedScreenSelection == STOPPED_SCREEN_SETTINGS)
+  {
+    g_UserSettings.settingsScreenSelection = SETTINGS_SCREEN_AUTO_RESTART;
+    updateSystemState(STATE_SETTINGS);
+  }
+  else if(g_UserSettings.stoppedScreenSelection == STOPPED_SCREEN_INFO)
+  {
+    g_InfoScreenScroll = 0;
+    updateSystemState(STATE_INFO);
+  }
+  else if(g_UserSettings.stoppedScreenSelection == STOPPED_SCREEN_DIAGNOSTICS)
+  {
+    updateSystemState(STATE_DIAGNOSTICS);
+  }
+}
+
+/*---------------------------------------------------------------------------*/
+/*! @brief      Change the selected Settings screen item.
+*//*-------------------------------------------------------------------------*/
+static void updateSettingsScreenSetting(void)
+{
+  if(g_UserSettings.settingsScreenSelection == SETTINGS_SCREEN_AUTO_RESTART)
+  {
+    g_UserSettings.autoRestartAfterCooldown = !g_UserSettings.autoRestartAfterCooldown;
+    EEPROM.update(EEPROM_ADDRESS_AUTO_RESTART, g_UserSettings.autoRestartAfterCooldown ? 1 : 0);
+  }
+  else if(g_UserSettings.settingsScreenSelection == SETTINGS_SCREEN_DUMP_BUTTON)
+  {
+    setDumpButtonEnabled(!g_UserSettings.dumpButtonEnabled);
+  }
+  else
+  {
+    returnToStoppedScreen();
+  }
+}
+
+/*---------------------------------------------------------------------------*/
+/*! @brief      Scroll the Info rows while keeping the Back row visible.
+*//*-------------------------------------------------------------------------*/
+static void advanceInfoScreenScroll(void)
+{
+  g_InfoScreenScroll = (g_InfoScreenScroll + 1) % INFO_SCREEN_SCROLL_COUNT;
+}
+
+/*---------------------------------------------------------------------------*/
+/*! @brief      Update the learned-current guard.
+  @return       true when the current fault threshold has been reached.
+*//*-------------------------------------------------------------------------*/
+static bool lowCurrentGuardFault(uint16_t const cycleAverageCurrent_ma)
+{
+  uint32_t baselineCurrentTotal_ma = 0;
+  uint8_t cycle;
+
+  if(g_RunSafety.ignoredCurrentCycles < LOW_CURRENT_IGNORED_CYCLES)
+  {
+    g_RunSafety.ignoredCurrentCycles++;
+    g_RunSafety.lowCurrentConsecutiveCycles = 0;
+    return false;
+  }
+
+  if(g_RunSafety.baselineCurrentCycles < LOW_CURRENT_BASELINE_CYCLES)
+  {
+    g_RunSafety.baselineCurrentWindow_ma[g_RunSafety.baselineCurrentCycles] = cycleAverageCurrent_ma;
+    g_RunSafety.baselineCurrentCycles++;
+    g_RunSafety.baselineCurrentWindowIndex = g_RunSafety.baselineCurrentCycles % LOW_CURRENT_BASELINE_CYCLES;
+  }
+  else if((uint32_t)cycleAverageCurrent_ma * 100 < (uint32_t)g_RunSafety.baselineCurrent_ma * LOW_CURRENT_RATIO_PERCENT)
+  {
+    g_RunSafety.lowCurrentConsecutiveCycles++;
+    if(g_RunSafety.lowCurrentConsecutiveCycles >= LOW_CURRENT_CONSECUTIVE_CYCLES)
+    {
+      g_RunSafety.cooldownRestartPending = false;
+      return true;
+    }
+    return false;
+  }
+  else
+  {
+    g_RunSafety.lowCurrentConsecutiveCycles = 0;
+    g_RunSafety.baselineCurrentWindow_ma[g_RunSafety.baselineCurrentWindowIndex] = cycleAverageCurrent_ma;
+    g_RunSafety.baselineCurrentWindowIndex = (g_RunSafety.baselineCurrentWindowIndex + 1) % LOW_CURRENT_BASELINE_CYCLES;
+  }
+
+  for(cycle = 0; cycle < g_RunSafety.baselineCurrentCycles; cycle++)
+  {
+    baselineCurrentTotal_ma += g_RunSafety.baselineCurrentWindow_ma[cycle];
+  }
+  g_RunSafety.baselineCurrent_ma = baselineCurrentTotal_ma / g_RunSafety.baselineCurrentCycles;
+  return false;
+}
+
+/*---------------------------------------------------------------------------*/
+/*! @brief      Draw the current operating mode on the right-hand panel.
+*//*-------------------------------------------------------------------------*/
+static void drawCurrentMode(uint8_t const y, bool const selected)
+{
+  display.setCursor(RIGHT_PANEL_X, y);
+  if(selected) display.setTextColor(BLACK, WHITE);
+  if(CurrentMode == MODE_FREE_RUN)
+  {
+    display.println(F("FREE RUN"));
+  }
+  else if(CurrentMode == MODE_AUTOMATIC)
+  {
+    display.println(F("AUTO FEED"));
+  }
+  else
+  {
+    display.println(F("ONE SHOT"));
+  }
+  display.setTextColor(WHITE);
+}
+
+/*---------------------------------------------------------------------------*/
+/*! @brief      Draw temperature when a sensor is fitted.
+*//*-------------------------------------------------------------------------*/
+static void drawTemperature(uint8_t const y, float const temperature)
+{
+  if(NumberDallasTempDevices != 0)
+  {
+    display.setCursor(RIGHT_PANEL_X, y);
+    display.print(temperature, 1);
+    display.print((char PROGMEM)248);
+    display.print(F("C"));
+  }
+}
+
+/*---------------------------------------------------------------------------*/
+/*! @brief      Draw the optional case counter.
+*//*-------------------------------------------------------------------------*/
+static void drawCaseCount(uint8_t const y, uint16_t const casesAnnealed)
+{
+  #ifdef SHOW_CASE_COUNT
+    display.setCursor(RIGHT_PANEL_X, y);
+    display.print(F("CASES: "));
+    display.print(casesAnnealed, 1);
+  #endif
+}
+
+/*---------------------------------------------------------------------------*/
+/*! @brief      Draw the common left-side anneal-time panel.
+*//*-------------------------------------------------------------------------*/
+static void drawTimePanel(bool const selected)
+{
+  display.setTextSize(1);
+  display.setTextColor(WHITE);
+  display.setCursor(0, 0);
+  display.print(selected ? F("TIME>") : F("TIME"));
+  display.setTextSize(2);
+  display.setCursor(0,16);
+  display.print(g_UserSettings.annealTime_ms/1000, DEC);
+  display.print(F("."));
+  display.print((g_UserSettings.annealTime_ms%1000)/100, DEC);
+  display.print(F("s"));
+  display.setTextSize(1);
+}
+
+/*---------------------------------------------------------------------------*/
+/*! @brief      Draw the stopped screen and its selected right-panel item.
+*//*-------------------------------------------------------------------------*/
+static void drawStoppedScreen(bool const fanIsOn, float const temperature, uint16_t const casesAnnealed)
+{
+  display.clearDisplay();
+  drawTimePanel(g_UserSettings.stoppedScreenSelection == STOPPED_SCREEN_TIME);
+
+  if(g_UserSettings.stoppedScreenSelection == STOPPED_SCREEN_TIME ||
+     g_UserSettings.stoppedScreenSelection == STOPPED_SCREEN_MODE)
+  {
+    display.setCursor(RIGHT_PANEL_X,0);
+    display.println(fanIsOn ? F("FAN ON") : F("FAN OFF"));
+    drawCurrentMode(8, g_UserSettings.stoppedScreenSelection == STOPPED_SCREEN_MODE);
+    drawCaseCount(16, casesAnnealed);
+    drawTemperature(24, temperature);
+  }
+  else if(g_UserSettings.stoppedScreenSelection == STOPPED_SCREEN_SETTINGS)
+  {
+    drawCurrentMode(0, false);
+    drawCaseCount(8, casesAnnealed);
+    drawTemperature(16, temperature);
+    display.setCursor(RIGHT_PANEL_X,24);
+    display.setTextColor(BLACK, WHITE);
+    display.print(F("SETTINGS >"));
+    display.setTextColor(WHITE);
+  }
+  else if(g_UserSettings.stoppedScreenSelection == STOPPED_SCREEN_INFO)
+  {
+    drawCaseCount(0, casesAnnealed);
+    drawTemperature(8, temperature);
+    display.setCursor(RIGHT_PANEL_X,16);
+    display.print(F("SETTINGS >"));
+    display.setCursor(RIGHT_PANEL_X,24);
+    display.setTextColor(BLACK, WHITE);
+    display.print(F("INFO >"));
+    display.setTextColor(WHITE);
+  }
+  else
+  {
+    drawTemperature(0, temperature);
+    display.setCursor(RIGHT_PANEL_X,8);
+    display.print(F("SETTINGS >"));
+    display.setCursor(RIGHT_PANEL_X,16);
+    display.print(F("INFO >"));
+    display.setCursor(RIGHT_PANEL_X,24);
+    display.setTextColor(BLACK, WHITE);
+    display.print(F("DIAGNOSTICS>"));
+    display.setTextColor(WHITE);
+  }
+
+  display.drawLine(54,0,54,32,WHITE);
+  display.display();
+}
+
+/*---------------------------------------------------------------------------*/
+/*! @brief      Draw the Settings screen.
+*//*-------------------------------------------------------------------------*/
+static void drawSettingsScreen(void)
+{
+  display.clearDisplay();
+  drawTimePanel(false);
+  display.setCursor(RIGHT_PANEL_X,0);
+  display.print(F("SETTINGS"));
+  display.setCursor(RIGHT_PANEL_X,8);
+  if(g_UserSettings.settingsScreenSelection == SETTINGS_SCREEN_AUTO_RESTART) display.setTextColor(BLACK, WHITE);
+  display.print(F("RESTART: "));
+  display.print(g_UserSettings.autoRestartAfterCooldown ? F("ON") : F("OFF"));
+  display.setTextColor(WHITE);
+  display.setCursor(RIGHT_PANEL_X,16);
+  if(g_UserSettings.settingsScreenSelection == SETTINGS_SCREEN_DUMP_BUTTON) display.setTextColor(BLACK, WHITE);
+  display.print(F("DUMP: "));
+  display.print(g_UserSettings.dumpButtonEnabled ? F("ON") : F("OFF"));
+  display.setTextColor(WHITE);
+  display.setCursor(RIGHT_PANEL_X,24);
+  if(g_UserSettings.settingsScreenSelection == SETTINGS_SCREEN_BACK) display.setTextColor(BLACK, WHITE);
+  display.print(F("BACK >"));
+  display.setTextColor(WHITE);
+  display.drawLine(54,0,54,32,WHITE);
+  display.display();
+}
+
+/*---------------------------------------------------------------------------*/
+/*! @brief      Draw the full diagnostics screen.
+*//*-------------------------------------------------------------------------*/
+static void drawDiagnosticsScreen(void)
+{
+  display.clearDisplay();
+  drawTimePanel(false);
+  display.setCursor(RIGHT_PANEL_X,0);
+  display.print(F("DIAGNOSTICS"));
+  display.setCursor(RIGHT_PANEL_X,8);
+  display.print(F("TEMP:"));
+  display.print(sensors.getDeviceCount());
+  display.print(F(" CUR:"));
+  display.print(CurrentSensorPresent ? F("Y") : F("N"));
+  display.setCursor(RIGHT_PANEL_X,16);
+  drawResetDiagnostics();
+  display.setCursor(RIGHT_PANEL_X,24);
+  display.setTextColor(BLACK, WHITE);
+  display.print(F("BACK >"));
+  display.setTextColor(WHITE);
+  display.drawLine(54,0,54,32,WHITE);
+  display.display();
+}
+
+/*---------------------------------------------------------------------------*/
+/*! @brief      Draw scrolling low-current, supply-voltage, and firmware information.
+*//*-------------------------------------------------------------------------*/
+static void drawInfoScreen(void)
+{
+  display.clearDisplay();
+  drawTimePanel(false);
+  if(g_InfoScreenScroll == 0)
+  {
+    display.setCursor(RIGHT_PANEL_X,0);
+    display.print(F("INFO"));
+  }
+
+  if(g_InfoScreenScroll < 2)
+  {
+    display.setCursor(RIGHT_PANEL_X, 8 - (g_InfoScreenScroll * 8));
+    display.print(F("LOW: "));
+    display.print(LOW_CURRENT_RATIO_PERCENT);
+    display.print(F("% N"));
+    display.print(LOW_CURRENT_BASELINE_CYCLES);
+  }
+
+  display.setCursor(RIGHT_PANEL_X, 16 - (g_InfoScreenScroll * 8));
+  display.print(F("BASE: "));
+  if(g_RunSafety.baselineCurrentCycles >= LOW_CURRENT_BASELINE_CYCLES)
+  {
+    display.print(g_RunSafety.baselineCurrent_ma/1000, DEC);
+    display.print(F("."));
+    display.print((g_RunSafety.baselineCurrent_ma%1000)/100, DEC);
+    display.print(F("A"));
+  }
+  else
+  {
+    display.print(F("--"));
+  }
+
+  if(g_InfoScreenScroll > 0)
+  {
+    refreshSupplyVoltage();
+    display.setCursor(RIGHT_PANEL_X, 24 - (g_InfoScreenScroll * 8));
+    display.print(F("5V: "));
+    display.print(g_SupplyVoltage_mv/1000, DEC);
+    display.print(F("."));
+    display.print((g_SupplyVoltage_mv%1000)/100, DEC);
+    display.print(F("V"));
+  }
+
+  if(g_InfoScreenScroll > 1)
+  {
+    display.setCursor(RIGHT_PANEL_X,16);
+    display.print(F("FW: "));
+    display.print(SOFTWARE_VERSION);
+  }
+  display.setCursor(RIGHT_PANEL_X,24);
+  display.setTextColor(BLACK, WHITE);
+  display.print(F("BACK >"));
+  display.setTextColor(WHITE);
+  display.drawLine(54,0,54,32,WHITE);
+  display.display();
+}
+
+/*---------------------------------------------------------------------------*/
+/*! @brief      Draw compact reset diagnostics: cause/state.
+  @details      Cause codes: W=watchdog, B=brown-out, E=external, P=power-on.
+                The cause is best-effort because the bootloader can clear it.
+*//*-------------------------------------------------------------------------*/
+static void drawResetDiagnostics(void)
+{
+  display.print(F("RST:"));
+  if(g_ResetDiagnostics.resetFlags & _BV(WDRF))
+  {
+    display.print(F("W"));
+  }
+  else if(g_ResetDiagnostics.resetFlags & _BV(BORF))
+  {
+    display.print(F("B"));
+  }
+  else if(g_ResetDiagnostics.resetFlags & _BV(EXTRF))
+  {
+    display.print(F("E"));
+  }
+  else if(g_ResetDiagnostics.resetFlags & _BV(PORF))
+  {
+    display.print(F("P"));
+  }
+  else
+  {
+    display.print(F("-"));
+  }
+
+  display.print(F("|"));
+  if(g_ResetDiagnostics.previousSystemState == STATE_ANNEALING)
+  {
+    display.print(F("A"));
+  }
+  else if(g_ResetDiagnostics.previousSystemState == STATE_DROPPING)
+  {
+    display.print(F("D"));
+  }
+  else if(g_ResetDiagnostics.previousSystemState == STATE_RELOADING)
+  {
+    display.print(F("R"));
+  }
+  else if(g_ResetDiagnostics.previousSystemState == STATE_COOLDOWN)
+  {
+    display.print(F("C"));
+  }
+  else if(g_ResetDiagnostics.previousSystemState == STATE_STOPPED)
+  {
+    display.print(F("S"));
+  }
+  else
+  {
+    display.print(F("?"));
+  }
+}
+
+/*---------------------------------------------------------------------------*/
+/*! @brief      Print reset diagnostics to the DEBUG serial console.
+*//*-------------------------------------------------------------------------*/
+static void printResetDiagnostics(void)
+{
+  Serial.print(F("Reset flags: "));
+  if(g_ResetDiagnostics.resetFlags & _BV(WDRF)) Serial.print(F("WDRF "));
+  if(g_ResetDiagnostics.resetFlags & _BV(BORF))  Serial.print(F("BORF "));
+  if(g_ResetDiagnostics.resetFlags & _BV(EXTRF)) Serial.print(F("EXTRF "));
+  if(g_ResetDiagnostics.resetFlags & _BV(PORF))  Serial.print(F("PORF "));
+  if(g_ResetDiagnostics.resetFlags == 0) Serial.print(F("none"));
+  Serial.print(F("; previous state: "));
+  Serial.println(g_ResetDiagnostics.previousSystemState);
+}
+
+/*---------------------------------------------------------------------------*/
 /*! @brief      Set system state.
   @param        state: System state.
 *//*-------------------------------------------------------------------------*/
-static tStateMachineStates updateSystemState(tStateMachineStates const state)
+static void updateSystemState(tStateMachineStates const state)
 {
-  g_SystemStatePrev = g_SystemState;
-  g_SystemState = state;
+  ATOMIC_BLOCK(ATOMIC_RESTORESTATE)
+  {
+    g_SystemStatePrev = g_SystemState;
+    g_SystemState = state;
+  }
 }
 
 /*---------------------------------------------------------------------------*/
@@ -1290,6 +1831,25 @@ static bool hasSystemStateChanged(void)
   }
 
   return true;
+}
+
+/*---------------------------------------------------------------------------*/
+/*! @brief      Return true after a millisecond deadline, including rollover.
+*//*-------------------------------------------------------------------------*/
+static inline bool hasTimeElapsed(uint32_t const timeTarget, uint32_t const currentTime)
+{
+  return (int32_t)(currentTime - timeTarget) >= 0;
+}
+
+/*---------------------------------------------------------------------------*/
+/*! @brief      Atomically update the deadline used by the timer ISR.
+*//*-------------------------------------------------------------------------*/
+static void setSystemTimeTarget(uint32_t const timeTarget)
+{
+  ATOMIC_BLOCK(ATOMIC_RESTORESTATE)
+  {
+    SystemTimeTarget = timeTarget;
+  }
 }
 
 /*---------------------------------------------------------------------------*/
@@ -1420,13 +1980,58 @@ static uint16_t readPsuCurrent_ma(void)
   return adc;
 }
 
+/*---------------------------------------------------------------------------*/
+/*! @brief      Estimate the regulated AVcc/5 V rail using the internal band-gap.
+  @details      The internal band-gap has device tolerance; calibrate
+                INTERNAL_BANDGAP_MV against a meter if absolute accuracy matters.
+  @return       Estimated AVcc in millivolts.
+*//*-------------------------------------------------------------------------*/
+static uint16_t readSupplyVoltage_mv(void)
+{
+  uint8_t previousAdmux = ADMUX;
+
+  // AVcc is the ADC reference; channel 14 is the internal 1.1 V band-gap.
+  ADMUX = _BV(REFS0) | _BV(MUX3) | _BV(MUX2) | _BV(MUX1);
+  delay(2); //allow the band-gap and ADC sample capacitor to settle
+  ADCSRA |= _BV(ADSC);
+  while(ADCSRA & _BV(ADSC))
+  {
+  }
+
+  uint16_t adc = ADC;
+  ADMUX = previousAdmux;
+  ADCSRA |= _BV(ADSC); //discard one conversion after switching back from band-gap
+  while(ADCSRA & _BV(ADSC))
+  {
+  }
+  if(adc == 0)
+  {
+    return 0;
+  }
+  return ((uint32_t)INTERNAL_BANDGAP_MV * 1023UL + (adc / 2)) / adc;
+}
+
+/*---------------------------------------------------------------------------*/
+/*! @brief      Refresh the cached AVcc estimate at a display-friendly rate.
+*//*-------------------------------------------------------------------------*/
+static void refreshSupplyVoltage(void)
+{
+  uint32_t currentTime = millis();
+  if(g_SupplyVoltageSampleTime == 0 ||
+     hasTimeElapsed(g_SupplyVoltageSampleTime + SUPPLY_VOLTAGE_SAMPLE_PERIOD, currentTime))
+  {
+    g_SupplyVoltage_mv = readSupplyVoltage_mv();
+    g_SupplyVoltageSampleTime = currentTime;
+  }
+}
+
 
 /*---------------------------------------------------------------------------*/
 /*! @brief      rotate case loader to preload position from home
 *//*-------------------------------------------------------------------------*/
 static void preloadCase(void)
 {
-	StepsToGo = StepsToGo + CASE_FEEDER_STEPS_DROP_TO_PRELOAD;
+	addStepsToGo(CASE_FEEDER_STEPS_DROP_TO_PRELOAD);
 	//enableStepperPulses(1);
 }
 
@@ -1445,11 +2050,13 @@ static void loadCase(void)
 *//*-------------------------------------------------------------------------*/
 static void returnCaseFeederHome(void)
 {
-	if(StepsFromHome)
-		{
-			StepsToGo = STEPPER_STEPS_PER_TURN - StepsFromHome;
-		}
-
+  ATOMIC_BLOCK(ATOMIC_RESTORESTATE)
+  {
+    if(StepsFromHome)
+    {
+      StepsToGo = STEPPER_STEPS_PER_TURN - StepsFromHome;
+    }
+  }
 }
 
 /*---------------------------------------------------------------------------*/
@@ -1457,7 +2064,7 @@ static void returnCaseFeederHome(void)
 *//*-------------------------------------------------------------------------*/
 static bool caseFeederStillMoving(void)
 {
-  if(StepsToGo)
+  if(getStepsToGo())
     {
       return true;
     }
@@ -1469,6 +2076,54 @@ static bool caseFeederStillMoving(void)
 }
 
 /*---------------------------------------------------------------------------*/
+/*! @brief      Atomically add feeder steps while the timer ISR is active.
+*//*-------------------------------------------------------------------------*/
+static void addStepsToGo(uint16_t const steps)
+{
+  ATOMIC_BLOCK(ATOMIC_RESTORESTATE)
+  {
+    StepsToGo += steps;
+  }
+}
+
+/*---------------------------------------------------------------------------*/
+/*! @brief      Atomically set the remaining feeder steps.
+*//*-------------------------------------------------------------------------*/
+static void setStepsToGo(uint16_t const steps)
+{
+  ATOMIC_BLOCK(ATOMIC_RESTORESTATE)
+  {
+    StepsToGo = steps;
+  }
+}
+
+/*---------------------------------------------------------------------------*/
+/*! @brief      Atomically read the remaining feeder steps.
+*//*-------------------------------------------------------------------------*/
+static uint16_t getStepsToGo(void)
+{
+  uint16_t steps;
+  ATOMIC_BLOCK(ATOMIC_RESTORESTATE)
+  {
+    steps = StepsToGo;
+  }
+  return steps;
+}
+
+/*---------------------------------------------------------------------------*/
+/*! @brief      Atomically read the feeder position.
+*//*-------------------------------------------------------------------------*/
+static uint16_t getStepsFromHome(void)
+{
+  uint16_t steps;
+  ATOMIC_BLOCK(ATOMIC_RESTORESTATE)
+  {
+    steps = StepsFromHome;
+  }
+  return steps;
+}
+
+/*---------------------------------------------------------------------------*/
 /*! @brief      is case feeder still moving?
 *//*-------------------------------------------------------------------------*/
 static float readTemperature(uint8_t index)
@@ -1476,4 +2131,12 @@ static float readTemperature(uint8_t index)
   float t = sensors.getTempCByIndex(index);
   sensors.requestTemperatures(); // this takes quite some time to complete ~90ms or longer. read it on the next loop
   return t;
+}
+
+/*---------------------------------------------------------------------------*/
+/*! @brief      Check whether a DS18B20 temperature reading is valid.
+*//*-------------------------------------------------------------------------*/
+static bool isTemperatureReadingValid(float const temperature)
+{
+  return temperature >= TEMP_SENSOR_MIN_C && temperature <= TEMP_SENSOR_MAX_C;
 }
