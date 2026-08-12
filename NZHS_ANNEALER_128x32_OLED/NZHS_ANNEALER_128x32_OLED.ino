@@ -43,6 +43,8 @@
 #define MIN_ANNEAL_TIME 2000 //min anneal time in ms
 #define MAX_ANNEAL_TIME 8000 //max anneal time in ms
 #define LONG_PRESS_HOLD_TIME 15 //main-loop iterations before UP resets the selected time to 2.0 seconds
+#define PROFILE_NAME_REPEAT_DELAY 1000 //hold UP for this long before profile-name characters begin repeating
+#define PROFILE_NAME_REPEAT_PERIOD 150 //milliseconds between repeated profile-name characters
 #define LOW_CURRENT_IGNORED_CYCLES 1 //first anneal cycle is ignored while the system settles
 #define LOW_CURRENT_BASELINE_CYCLES 5 //accepted normal cycles retained in the moving baseline window
 #define LOW_CURRENT_CONSECUTIVE_CYCLES 1 //low-current cycles that trigger a fault
@@ -703,6 +705,8 @@ void loop()
   static bool upKey=0;
   static bool upKeyPrev=0;
   static uint8_t upKeyDuration = 0;
+  static uint32_t profileNameRepeatStart = 0;
+  static uint32_t profileNameNextRepeat = 0;
   static bool FanIsOn = false;
   static bool annealTimeChanged = false;
   // Retained upstream measurement placeholder; voltage is not displayed yet.
@@ -1001,6 +1005,8 @@ void loop()
         if(g_UserSettings.profileNameCursor < PROFILE_NAME_LENGTH)
         {
           advanceProfileNameCharacter();
+          profileNameRepeatStart = millis();
+          profileNameNextRepeat = profileNameRepeatStart + PROFILE_NAME_REPEAT_DELAY;
         }
         else if(g_UserSettings.profileNameCursor == PROFILE_NAME_LENGTH)
         {
@@ -1013,6 +1019,20 @@ void loop()
           updateSystemState(STATE_PROFILE_ACTIONS);
           break;
         }
+      }
+      else if(upKey &&
+              g_UserSettings.profileNameCursor < PROFILE_NAME_LENGTH &&
+              profileNameRepeatStart != 0 &&
+              hasTimeElapsed(profileNameNextRepeat, millis()))
+      {
+        // Keep name entry quick without making the character sequence unreadable.
+        advanceProfileNameCharacter();
+        profileNameNextRepeat = millis() + PROFILE_NAME_REPEAT_PERIOD;
+      }
+      if(!upKey)
+      {
+        profileNameRepeatStart = 0;
+        profileNameNextRepeat = 0;
       }
       drawProfileNameEditScreen();
     }

@@ -78,7 +78,9 @@ selected character through `A-Z`, `0-9`, `-`, `.`, and space; MODE moves the
 cursor through every character and then the visible `SAVE >` item; UP at
 `SAVE >` saves and briefly shows `SAVED`. Saving an existing profile also
 briefly shows `SAVED`. One more MODE press selects `BACK >`; UP there discards name
-changes. Delete confirmation has visible `DELETE >` and `BACK >` items; MODE
+changes. While a name character is selected, holding UP for one second starts
+automatic character cycling; a normal UP press still advances only one
+character. Delete confirmation has visible `DELETE >` and `BACK >` items; MODE
 selects either and UP performs the selected action. START does not leave menus:
 every menu exits through its visible `BACK >` item and UP.
 
