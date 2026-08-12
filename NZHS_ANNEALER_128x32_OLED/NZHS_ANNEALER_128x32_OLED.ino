@@ -1136,12 +1136,20 @@ void loop()
         if(g_RunSafety.restartCurrentSamples)
         {
           uint16_t restartCycleAverageCurrent_ma = g_RunSafety.restartCurrentTotal_ma / g_RunSafety.restartCurrentSamples;
-          if(restartCycleAverageCurrent_ma <= CURRENT_SENSOR_DETECTION_MA)
+          if(g_RunSafety.ignoredCurrentCycles >= LOW_CURRENT_IGNORED_CYCLES &&
+             restartCycleAverageCurrent_ma <= CURRENT_SENSOR_DETECTION_MA)
           {
-            // This check applies only to automatic restart. The original A0
-            // sensor-presence detection remains in use for all other features.
+            // The first case is a deliberate leap of faith while the system
+            // settles. After it, a cycle below 0.1 A means no usable annealing
+            // current: stop before opening the gate and prevent a future
+            // unattended cooldown restart. This is independent of the legacy
+            // A0 mid-rail sensor-presence flag.
             g_UserSettings.autoRestartAfterCooldown = false;
             EEPROM.update(EEPROM_ADDRESS_AUTO_RESTART, 0);
+            g_RunSafety.cooldownRestartPending = false;
+            turnStartStopLedOff();
+            updateSystemState(STATE_LOW_CURRENT_WARNING);
+            break;
           }
         }
 

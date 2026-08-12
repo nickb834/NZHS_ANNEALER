@@ -138,11 +138,12 @@ first current measurement. Cooldown starts above 55 C and ends below 40 C.
 ### Low-current guard
 
 The existing A0 mid-rail check continues to detect current-sensor presence for
-the display, over-current protection, and low-current guard. Independently,
-the saved `RESTART` setting is honoured as a first-cycle leap of faith. If an
-anneal-cycle average is at or below 0.1 A, automatic restart is disabled and
-its saved preference is cleared. The cooldown screen always shows `AUTO ON`
-when a restart is pending, otherwise `AUTO OFF`.
+the display and over-current protection. The first anneal cycle is a deliberate
+current-sensing leap of faith; from the second cycle onward, every average must
+exceed 0.1 A. A cycle at or below that floor stops before opening the gate,
+displays the low-current fault, and clears the saved `RESTART` preference. The
+cooldown screen always shows `AUTO ON` when a restart is pending, otherwise
+`AUTO OFF`.
 
 After verification, the first anneal cycle of each run is ignored. The next
 five accepted anneal-cycle averages establish a moving normal-current window.
@@ -170,10 +171,11 @@ Before unattended use or publication of a release:
 - In Info, press MODE through all three rows and confirm `LOW`, `BASE`, `5V`,
   and firmware version appear in order while `BACK >` remains visible. Confirm
   the 5 V value refreshes no more frequently than once per second.
-- Verify a no-current-sensor anneal stays at or below 0.1 A, then confirm
-  `RESTART` is cleared and remains OFF on the following cycle and after reboot;
-  the other current-sensor displays and protections retain their existing A0
-  detection behaviour.
+- Verify the first no-current cycle completes as the intentional sensing leap
+  of faith, then confirm the second cycle at or below 0.1 A stops before
+  dropping, shows the low-current fault, and `RESTART` remains OFF after
+  reboot; the other current-sensor displays and protections retain their
+  existing A0 detection behaviour.
 - Verify restart preference persistence with a current sensor fitted.
 - Exercise free-run, auto-feed, dump OFF, and dump ON behavior.
 - Save, rename, load, and delete a profile. Confirm loaded time, mode,
