@@ -43,6 +43,9 @@
 #define MIN_ANNEAL_TIME 2000 //min anneal time in ms
 #define MAX_ANNEAL_TIME 8000 //max anneal time in ms
 #define LONG_PRESS_HOLD_TIME 15 //main-loop iterations before UP resets the selected time to 2.0 seconds
+#define RAPID_TIME_PRESS_COUNT 5 //consecutive UP presses before changing in 0.5 second steps
+#define RAPID_TIME_PRESS_INTERVAL 1000 //maximum milliseconds between rapid UP presses
+#define RAPID_TIME_INCREMENT 500 //milliseconds added by rapid time adjustment
 #define PROFILE_NAME_REPEAT_DELAY 1000 //hold UP for this long before profile-name characters begin repeating
 #define PROFILE_NAME_REPEAT_PERIOD 150 //milliseconds between repeated profile-name characters
 #define LOW_CURRENT_IGNORED_CYCLES 1 //first anneal cycle is ignored while the system settles
@@ -440,7 +443,7 @@ static void returnToStoppedScreen(void);
 static void setFreeRunMode(void);
 static void setDumpButtonEnabled(bool const enabled);
 static void cycleCurrentMode(void);
-static void updateStoppedScreenSetting(void);
+static void updateStoppedScreenSetting(bool const rapidTimeAdjust);
 static void updateSettingsScreenSetting(void);
 static uint16_t getProfileAddress(uint8_t const slot);
 static uint8_t calculateProfileChecksum(tCartridgeProfile const * const profile);
@@ -705,6 +708,8 @@ void loop()
   static bool upKey=0;
   static bool upKeyPrev=0;
   static uint8_t upKeyDuration = 0;
+  static uint8_t rapidTimePresses = 0;
+  static uint32_t lastTimePress = 0;
   static uint32_t profileNameRepeatStart = 0;
   static uint32_t profileNameNextRepeat = 0;
   static bool FanIsOn = false;
@@ -885,19 +890,35 @@ void loop()
           g_UserSettings.annealTime_ms = MIN_ANNEAL_TIME;
           annealTimeChanged = true;
           upKeyDuration = 0;
+          rapidTimePresses = 0;
+          lastTimePress = 0;
         }
       }
       else
       {
         upKeyDuration = 0;
+        rapidTimePresses = 0;
+        lastTimePress = 0;
       }
       if (upKey && !upKeyPrev) //up key pressed?
       {
+        bool rapidTimeAdjust = false;
         if(g_UserSettings.stoppedScreenSelection == STOPPED_SCREEN_TIME)
         {
+          uint32_t const currentTime = millis();
+          if(lastTimePress == 0 || hasTimeElapsed(lastTimePress + RAPID_TIME_PRESS_INTERVAL, currentTime))
+          {
+            rapidTimePresses = 1;
+          }
+          else if(rapidTimePresses < RAPID_TIME_PRESS_COUNT)
+          {
+            rapidTimePresses++;
+          }
+          lastTimePress = currentTime;
+          rapidTimeAdjust = rapidTimePresses >= RAPID_TIME_PRESS_COUNT;
           annealTimeChanged = true;
         }
-        updateStoppedScreenSetting();
+        updateStoppedScreenSetting(rapidTimeAdjust);
         if(g_SystemState != STATE_STOPPED)
         {
           break;
@@ -1866,11 +1887,13 @@ static void cycleCurrentMode(void)
 /*---------------------------------------------------------------------------*/
 /*! @brief      Change the value selected on the stopped screen.
 *//*-------------------------------------------------------------------------*/
-static void updateStoppedScreenSetting(void)
+static void updateStoppedScreenSetting(bool const rapidTimeAdjust)
 {
   if(g_UserSettings.stoppedScreenSelection == STOPPED_SCREEN_TIME)
   {
-    g_UserSettings.annealTime_ms = g_UserSettings.annealTime_ms >= MAX_ANNEAL_TIME ? MIN_ANNEAL_TIME : g_UserSettings.annealTime_ms + 100;
+    uint16_t const increment = rapidTimeAdjust ? RAPID_TIME_INCREMENT : 100;
+    g_UserSettings.annealTime_ms = g_UserSettings.annealTime_ms > (MAX_ANNEAL_TIME - increment) ?
+      MIN_ANNEAL_TIME : g_UserSettings.annealTime_ms + increment;
   }
   else if(g_UserSettings.stoppedScreenSelection == STOPPED_SCREEN_MODE)
   {

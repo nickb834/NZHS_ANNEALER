@@ -23,6 +23,11 @@ item. The top-right row always shows `FAN ON` or `FAN OFF` in the normal view.
 | UP | Change TIME or MODE, or enter the selected menu |
 | START | Start the selected operating mode |
 
+When TIME is selected, UP normally advances by 0.1 seconds. After five
+consecutive presses no more than one second apart, it advances by 0.5 seconds;
+pause briefly to return to 0.1-second adjustment. Holding UP still resets TIME
+to 2.0 seconds.
+
 `RESTART` is a user-selected setting and is honoured at boot, before the first
 anneal-cycle current measurement.
 
