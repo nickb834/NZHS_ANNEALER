@@ -77,6 +77,13 @@
 #define EEPROM_ADDRESS_DUMP_BUTTON 3
 #define EEPROM_ADDRESS_DUMP_BUTTON_MAGIC 4
 #define EEPROM_DUMP_BUTTON_MAGIC 0x3C
+#define EEPROM_ADDRESS_PROFILE_BASE 16
+#define PROFILE_COUNT 8
+#define PROFILE_NAME_LENGTH 10
+#define PROFILE_MAGIC 0xC7
+#define PROFILE_FLAG_AUTO_RESTART 0x01
+#define PROFILE_FLAG_DUMP_BUTTON 0x02
+#define PROFILE_SAVE_NOTICE_PERIOD 1000
 #define RIGHT_PANEL_X 56
 
 Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, -1, 200000, 200000);
@@ -108,6 +115,11 @@ typedef enum tStateMachineStates
   STATE_JUST_BOOTED,
   STATE_SHOW_WARNING,
   STATE_SETTINGS,
+  STATE_PROFILES,
+  STATE_PROFILE_ACTIONS,
+  STATE_PROFILE_NAME_EDIT,
+  STATE_PROFILE_DELETE_CONFIRM,
+  STATE_PROFILE_SAVED,
   STATE_DIAGNOSTICS,
   STATE_INFO,
   STATE_OVERCURRENT_WARNING,
@@ -128,6 +140,7 @@ typedef enum tStoppedScreenSelection
   STOPPED_SCREEN_TIME = 0,
   STOPPED_SCREEN_MODE,
   STOPPED_SCREEN_SETTINGS,
+  STOPPED_SCREEN_PROFILES,
   STOPPED_SCREEN_INFO,
   STOPPED_SCREEN_DIAGNOSTICS,
   STOPPED_SCREEN_SELECTION_COUNT,
@@ -141,6 +154,16 @@ typedef enum tSettingsScreenSelection
   SETTINGS_SCREEN_SELECTION_COUNT,
 } tSettingsScreenSelection;
 
+typedef enum tProfileActionSelection
+{
+  PROFILE_ACTION_LOAD = 0,
+  PROFILE_ACTION_SAVE,
+  PROFILE_ACTION_RENAME,
+  PROFILE_ACTION_DELETE,
+  PROFILE_ACTION_BACK,
+  PROFILE_ACTION_SELECTION_COUNT,
+} tProfileActionSelection;
+
 typedef struct tUserSettings
 {
   uint16_t annealTime_ms;
@@ -148,7 +171,21 @@ typedef struct tUserSettings
   bool dumpButtonEnabled;
   tStoppedScreenSelection stoppedScreenSelection;
   tSettingsScreenSelection settingsScreenSelection;
+  uint8_t profileSlot;
+  tProfileActionSelection profileActionSelection;
+  uint8_t profileNameCursor;
+  bool profileDeleteConfirmed;
 } tUserSettings;
+
+typedef struct __attribute__((packed)) tCartridgeProfile
+{
+  uint8_t magic;
+  char name[PROFILE_NAME_LENGTH];
+  uint16_t annealTime_ms;
+  uint8_t mode;
+  uint8_t flags;
+  uint8_t checksum;
+} tCartridgeProfile;
 
 typedef struct tRunSafetyState
 {
@@ -338,6 +375,7 @@ static tStateMachineStates g_SystemStatePrev = STATE_UNKNOWN;
 static ModeList CurrentMode = MODE_SINGLE_SHOT;
 static tUserSettings g_UserSettings;
 static tRunSafetyState g_RunSafety;
+static tCartridgeProfile g_ProfileEditor;
 static uint8_t g_InfoScreenScroll = 0;
 static uint16_t g_SupplyVoltage_mv = 0;
 static uint32_t g_SupplyVoltageSampleTime = 0;
@@ -393,12 +431,25 @@ static void resetRunSafetyState(void);
 static void enterCooldown(bool const allowAutomaticRestart, bool const cycleStopRequested);
 static void advanceStoppedScreenSelection(void);
 static void advanceSettingsScreenSelection(void);
+static void advanceProfileSlot(void);
+static void advanceProfileActionSelection(void);
 static void returnToStoppedScreen(void);
 static void setFreeRunMode(void);
 static void setDumpButtonEnabled(bool const enabled);
 static void cycleCurrentMode(void);
 static void updateStoppedScreenSetting(void);
 static void updateSettingsScreenSetting(void);
+static uint16_t getProfileAddress(uint8_t const slot);
+static uint8_t calculateProfileChecksum(tCartridgeProfile const * const profile);
+static bool loadProfile(uint8_t const slot, tCartridgeProfile * const profile);
+static void saveProfile(uint8_t const slot, tCartridgeProfile const * const profile);
+static void clearProfile(uint8_t const slot);
+static void makeDefaultProfile(uint8_t const slot, tCartridgeProfile * const profile);
+static void applyProfile(tCartridgeProfile const * const profile);
+static void saveCurrentSettingsToProfile(uint8_t const slot);
+static void beginProfileNameEdit(uint8_t const slot);
+static void advanceProfileNameCharacter(void);
+static void saveEditedProfileName(void);
 static void advanceInfoScreenScroll(void);
 static bool lowCurrentGuardFault(uint16_t const cycleAverageCurrent_ma);
 static void drawCurrentMode(uint8_t const y, bool const selected);
@@ -407,6 +458,11 @@ static void drawCaseCount(uint8_t const y, uint16_t const casesAnnealed);
 static void drawTimePanel(bool const selected);
 static void drawStoppedScreen(bool const fanIsOn, float const temperature, uint16_t const casesAnnealed);
 static void drawSettingsScreen(void);
+static void drawProfilesScreen(void);
+static void drawProfileActionsScreen(void);
+static void drawProfileNameEditScreen(void);
+static void drawProfileDeleteConfirmScreen(void);
+static void drawProfileSavedScreen(void);
 static void drawDiagnosticsScreen(void);
 static void drawInfoScreen(void);
 static void drawResetDiagnostics(void);
@@ -717,10 +773,15 @@ void loop()
       updateSystemState(STATE_STOPPED);
     }
     else if(g_SystemState == STATE_SETTINGS ||
+            g_SystemState == STATE_PROFILES ||
+            g_SystemState == STATE_PROFILE_ACTIONS ||
+            g_SystemState == STATE_PROFILE_NAME_EDIT ||
+            g_SystemState == STATE_PROFILE_DELETE_CONFIRM ||
+            g_SystemState == STATE_PROFILE_SAVED ||
             g_SystemState == STATE_DIAGNOSTICS ||
             g_SystemState == STATE_INFO)
     {
-      returnToStoppedScreen();
+      // Menus always leave through their visible BACK > item and UP.
     }
     else if(g_SystemState == STATE_COOLDOWN)
     {
@@ -765,9 +826,21 @@ void loop()
       {
         advanceSettingsScreenSelection();
       }
-      else if(g_SystemState == STATE_DIAGNOSTICS)
+      else if(g_SystemState == STATE_PROFILES)
       {
-        returnToStoppedScreen();
+        advanceProfileSlot();
+      }
+      else if(g_SystemState == STATE_PROFILE_ACTIONS)
+      {
+        advanceProfileActionSelection();
+      }
+      else if(g_SystemState == STATE_PROFILE_NAME_EDIT)
+      {
+        g_UserSettings.profileNameCursor = (g_UserSettings.profileNameCursor + 1) % (PROFILE_NAME_LENGTH + 2);
+      }
+      else if(g_SystemState == STATE_PROFILE_DELETE_CONFIRM)
+      {
+        g_UserSettings.profileDeleteConfirmed = !g_UserSettings.profileDeleteConfirmed;
       }
       else if(g_SystemState == STATE_INFO)
       {
@@ -834,6 +907,135 @@ void loop()
         }
       }
       drawSettingsScreen();
+    }
+    break;
+
+    case STATE_PROFILES:
+    {
+      tCartridgeProfile profile;
+      updateSystemState(g_SystemState);
+      if(upKey && !upKeyPrev)
+      {
+        if(g_UserSettings.profileSlot >= PROFILE_COUNT)
+        {
+          returnToStoppedScreen();
+          break;
+        }
+        g_UserSettings.profileActionSelection = loadProfile(g_UserSettings.profileSlot, &profile) ? PROFILE_ACTION_LOAD : PROFILE_ACTION_SAVE;
+        updateSystemState(STATE_PROFILE_ACTIONS);
+        break;
+      }
+      drawProfilesScreen();
+    }
+    break;
+
+    case STATE_PROFILE_ACTIONS:
+    {
+      tCartridgeProfile profile;
+      updateSystemState(g_SystemState);
+      if(upKey && !upKeyPrev)
+      {
+        if(g_UserSettings.profileActionSelection == PROFILE_ACTION_LOAD)
+        {
+          if(loadProfile(g_UserSettings.profileSlot, &profile))
+          {
+            applyProfile(&profile);
+            // Loading is the one menu action that returns ready to run.
+            g_UserSettings.stoppedScreenSelection = STOPPED_SCREEN_TIME;
+            returnToStoppedScreen();
+          }
+        }
+        else if(g_UserSettings.profileActionSelection == PROFILE_ACTION_SAVE)
+        {
+          bool const wasSaved = loadProfile(g_UserSettings.profileSlot, &profile);
+          saveCurrentSettingsToProfile(g_UserSettings.profileSlot);
+          if(!wasSaved)
+          {
+            beginProfileNameEdit(g_UserSettings.profileSlot);
+          }
+          else
+          {
+            updateSystemState(STATE_PROFILE_SAVED);
+          }
+        }
+        else if(g_UserSettings.profileActionSelection == PROFILE_ACTION_RENAME)
+        {
+          beginProfileNameEdit(g_UserSettings.profileSlot);
+        }
+        else if(g_UserSettings.profileActionSelection == PROFILE_ACTION_DELETE)
+        {
+          if(loadProfile(g_UserSettings.profileSlot, &profile))
+          {
+            g_UserSettings.profileDeleteConfirmed = false;
+            updateSystemState(STATE_PROFILE_DELETE_CONFIRM);
+          }
+        }
+        else
+        {
+          updateSystemState(STATE_PROFILES);
+        }
+        break;
+      }
+      drawProfileActionsScreen();
+    }
+    break;
+
+    case STATE_PROFILE_NAME_EDIT:
+    {
+      updateSystemState(g_SystemState);
+      if(upKey && !upKeyPrev)
+      {
+        if(g_UserSettings.profileNameCursor < PROFILE_NAME_LENGTH)
+        {
+          advanceProfileNameCharacter();
+        }
+        else if(g_UserSettings.profileNameCursor == PROFILE_NAME_LENGTH)
+        {
+          saveEditedProfileName();
+          updateSystemState(STATE_PROFILE_SAVED);
+          break;
+        }
+        else
+        {
+          updateSystemState(STATE_PROFILE_ACTIONS);
+          break;
+        }
+      }
+      drawProfileNameEditScreen();
+    }
+    break;
+
+    case STATE_PROFILE_DELETE_CONFIRM:
+      updateSystemState(g_SystemState);
+      if(upKey && !upKeyPrev)
+      {
+        if(g_UserSettings.profileDeleteConfirmed)
+        {
+          clearProfile(g_UserSettings.profileSlot);
+          updateSystemState(STATE_PROFILES);
+        }
+        else
+        {
+          updateSystemState(STATE_PROFILE_ACTIONS);
+        }
+        break;
+      }
+      drawProfileDeleteConfirmScreen();
+    break;
+
+    case STATE_PROFILE_SAVED:
+    {
+      if(hasSystemStateChanged())
+      {
+        setSystemTimeTarget(millis() + PROFILE_SAVE_NOTICE_PERIOD);
+      }
+      updateSystemState(g_SystemState);
+      if(hasTimeElapsed(SystemTimeTarget, millis()))
+      {
+        updateSystemState(STATE_PROFILES);
+        break;
+      }
+      drawProfileSavedScreen();
     }
     break;
 
@@ -1287,6 +1489,10 @@ static void loadUserSettings(void)
   g_UserSettings.dumpButtonEnabled = EEPROM.read(EEPROM_ADDRESS_DUMP_BUTTON) == 1;
   g_UserSettings.stoppedScreenSelection = STOPPED_SCREEN_TIME;
   g_UserSettings.settingsScreenSelection = SETTINGS_SCREEN_AUTO_RESTART;
+  g_UserSettings.profileSlot = 0;
+  g_UserSettings.profileActionSelection = PROFILE_ACTION_LOAD;
+  g_UserSettings.profileNameCursor = 0;
+  g_UserSettings.profileDeleteConfirmed = false;
   if(g_UserSettings.dumpButtonEnabled)
   {
     setFreeRunMode();
@@ -1323,6 +1529,209 @@ static void enterCooldown(bool const allowAutomaticRestart, bool const cycleStop
 }
 
 /*---------------------------------------------------------------------------*/
+/*! @brief      Return the EEPROM address of a fixed-size cartridge profile.
+*//*-------------------------------------------------------------------------*/
+static uint16_t getProfileAddress(uint8_t const slot)
+{
+  return EEPROM_ADDRESS_PROFILE_BASE + ((uint16_t)slot * sizeof(tCartridgeProfile));
+}
+
+/*---------------------------------------------------------------------------*/
+/*! @brief      Calculate the lightweight integrity check for one profile.
+*//*-------------------------------------------------------------------------*/
+static uint8_t calculateProfileChecksum(tCartridgeProfile const * const profile)
+{
+  uint8_t checksum = 0;
+  uint8_t index;
+  uint8_t const * const bytes = (uint8_t const *)profile;
+  for(index = 1; index < sizeof(tCartridgeProfile) - 1; index++)
+  {
+    checksum ^= bytes[index];
+  }
+  return checksum;
+}
+
+/*---------------------------------------------------------------------------*/
+/*! @brief      Load a valid profile; blank or interrupted records are rejected.
+*//*-------------------------------------------------------------------------*/
+static bool loadProfile(uint8_t const slot, tCartridgeProfile * const profile)
+{
+  if(slot >= PROFILE_COUNT)
+  {
+    return false;
+  }
+  EEPROM.get(getProfileAddress(slot), *profile);
+  return profile->magic == PROFILE_MAGIC &&
+         profile->checksum == calculateProfileChecksum(profile) &&
+         profile->annealTime_ms >= MIN_ANNEAL_TIME &&
+         profile->annealTime_ms <= MAX_ANNEAL_TIME &&
+         profile->mode <= MODE_AUTOMATIC;
+}
+
+/*---------------------------------------------------------------------------*/
+/*! @brief      Persist a profile with its valid marker written last.
+*//*-------------------------------------------------------------------------*/
+static void saveProfile(uint8_t const slot, tCartridgeProfile const * const profile)
+{
+  uint8_t index;
+  uint16_t address = getProfileAddress(slot);
+  tCartridgeProfile savedProfile = *profile;
+  uint8_t const * bytes;
+
+  savedProfile.magic = PROFILE_MAGIC;
+  savedProfile.checksum = calculateProfileChecksum(&savedProfile);
+  EEPROM.update(address, 0);
+  bytes = (uint8_t const *)&savedProfile;
+  for(index = 1; index < sizeof(tCartridgeProfile); index++)
+  {
+    EEPROM.update(address + index, bytes[index]);
+  }
+  EEPROM.update(address, PROFILE_MAGIC);
+}
+
+/*---------------------------------------------------------------------------*/
+/*! @brief      Mark a profile slot blank without touching neighbouring slots.
+*//*-------------------------------------------------------------------------*/
+static void clearProfile(uint8_t const slot)
+{
+  EEPROM.update(getProfileAddress(slot), 0);
+}
+
+/*---------------------------------------------------------------------------*/
+/*! @brief      Create a named snapshot of the active settings.
+*//*-------------------------------------------------------------------------*/
+static void makeDefaultProfile(uint8_t const slot, tCartridgeProfile * const profile)
+{
+  uint8_t index;
+  char const defaultName[] = "PROFILE ";
+  profile->magic = PROFILE_MAGIC;
+  for(index = 0; index < PROFILE_NAME_LENGTH; index++)
+  {
+    profile->name[index] = ' ';
+  }
+  for(index = 0; index < sizeof(defaultName) - 1; index++)
+  {
+    profile->name[index] = defaultName[index];
+  }
+  profile->name[PROFILE_NAME_LENGTH - 1] = '1' + slot;
+  profile->annealTime_ms = g_UserSettings.annealTime_ms;
+  profile->mode = CurrentMode;
+  profile->flags = (g_UserSettings.autoRestartAfterCooldown ? PROFILE_FLAG_AUTO_RESTART : 0) |
+                   (g_UserSettings.dumpButtonEnabled ? PROFILE_FLAG_DUMP_BUTTON : 0);
+  profile->checksum = calculateProfileChecksum(profile);
+}
+
+/*---------------------------------------------------------------------------*/
+/*! @brief      Apply a profile and mirror its values into the legacy settings.
+*//*-------------------------------------------------------------------------*/
+static void applyProfile(tCartridgeProfile const * const profile)
+{
+  g_UserSettings.annealTime_ms = profile->annealTime_ms;
+  g_UserSettings.autoRestartAfterCooldown = (profile->flags & PROFILE_FLAG_AUTO_RESTART) != 0;
+  g_UserSettings.dumpButtonEnabled = (profile->flags & PROFILE_FLAG_DUMP_BUTTON) != 0;
+  CurrentMode = (ModeList)profile->mode;
+  EEPROM.update(EEPROM_ADDRESS_ANNEAL_TIME, g_UserSettings.annealTime_ms / 100);
+  EEPROM.update(EEPROM_ADDRESS_AUTO_RESTART, g_UserSettings.autoRestartAfterCooldown ? 1 : 0);
+  EEPROM.update(EEPROM_ADDRESS_DUMP_BUTTON, g_UserSettings.dumpButtonEnabled ? 1 : 0);
+  if(g_UserSettings.dumpButtonEnabled)
+  {
+    setFreeRunMode();
+  }
+  else if(CurrentMode == MODE_AUTOMATIC)
+  {
+    digitalWrite(g_FeederStepperEnPin, LOW);
+    turnModeLedOn();
+  }
+  else if(CurrentMode == MODE_SINGLE_SHOT)
+  {
+    digitalWrite(g_FeederStepperEnPin, HIGH);
+    turnModeLedOff();
+  }
+  else
+  {
+    setFreeRunMode();
+  }
+}
+
+/*---------------------------------------------------------------------------*/
+/*! @brief      Save the active settings into the selected profile slot.
+*//*-------------------------------------------------------------------------*/
+static void saveCurrentSettingsToProfile(uint8_t const slot)
+{
+  tCartridgeProfile profile;
+  if(!loadProfile(slot, &profile))
+  {
+    makeDefaultProfile(slot, &profile);
+  }
+  profile.annealTime_ms = g_UserSettings.annealTime_ms;
+  profile.mode = CurrentMode;
+  profile.flags = (g_UserSettings.autoRestartAfterCooldown ? PROFILE_FLAG_AUTO_RESTART : 0) |
+                  (g_UserSettings.dumpButtonEnabled ? PROFILE_FLAG_DUMP_BUTTON : 0);
+  saveProfile(slot, &profile);
+}
+
+/*---------------------------------------------------------------------------*/
+/*! @brief      Open the fixed-width A-Z/0-9 name editor for a profile slot.
+*//*-------------------------------------------------------------------------*/
+static void beginProfileNameEdit(uint8_t const slot)
+{
+  if(!loadProfile(slot, &g_ProfileEditor))
+  {
+    makeDefaultProfile(slot, &g_ProfileEditor);
+  }
+  g_UserSettings.profileNameCursor = 0;
+  updateSystemState(STATE_PROFILE_NAME_EDIT);
+}
+
+/*---------------------------------------------------------------------------*/
+/*! @brief      Cycle the selected profile-name character through a safe set.
+*//*-------------------------------------------------------------------------*/
+static void advanceProfileNameCharacter(void)
+{
+  char * character = &g_ProfileEditor.name[g_UserSettings.profileNameCursor];
+  if(*character == ' ')
+  {
+    *character = 'A';
+  }
+  else if(*character >= 'A' && *character < 'Z')
+  {
+    (*character)++;
+  }
+  else if(*character == 'Z')
+  {
+    *character = '0';
+  }
+  else if(*character >= '0' && *character < '9')
+  {
+    (*character)++;
+  }
+  else if(*character == '9')
+  {
+    *character = '-';
+  }
+  else if(*character == '-')
+  {
+    *character = '.';
+  }
+  else
+  {
+    *character = ' ';
+  }
+}
+
+/*---------------------------------------------------------------------------*/
+/*! @brief      Persist the edited name and current settings in one profile.
+*//*-------------------------------------------------------------------------*/
+static void saveEditedProfileName(void)
+{
+  g_ProfileEditor.annealTime_ms = g_UserSettings.annealTime_ms;
+  g_ProfileEditor.mode = CurrentMode;
+  g_ProfileEditor.flags = (g_UserSettings.autoRestartAfterCooldown ? PROFILE_FLAG_AUTO_RESTART : 0) |
+                         (g_UserSettings.dumpButtonEnabled ? PROFILE_FLAG_DUMP_BUTTON : 0);
+  saveProfile(g_UserSettings.profileSlot, &g_ProfileEditor);
+}
+
+/*---------------------------------------------------------------------------*/
 /*! @brief      Move to the next stopped-screen item that is available.
 *//*-------------------------------------------------------------------------*/
 static void advanceStoppedScreenSelection(void)
@@ -1339,11 +1748,26 @@ static void advanceSettingsScreenSelection(void)
 }
 
 /*---------------------------------------------------------------------------*/
-/*! @brief      Leave a menu and restore the normal stopped screen.
+/*! @brief      Select the next stored cartridge-profile slot.
+*//*-------------------------------------------------------------------------*/
+static void advanceProfileSlot(void)
+{
+  g_UserSettings.profileSlot = (g_UserSettings.profileSlot + 1) % (PROFILE_COUNT + 1);
+}
+
+/*---------------------------------------------------------------------------*/
+/*! @brief      Select the next visible action for the selected profile.
+*//*-------------------------------------------------------------------------*/
+static void advanceProfileActionSelection(void)
+{
+  g_UserSettings.profileActionSelection = (tProfileActionSelection)((g_UserSettings.profileActionSelection + 1) % PROFILE_ACTION_SELECTION_COUNT);
+}
+
+/*---------------------------------------------------------------------------*/
+/*! @brief      Leave a menu while preserving its originating home selection.
 *//*-------------------------------------------------------------------------*/
 static void returnToStoppedScreen(void)
 {
-  g_UserSettings.stoppedScreenSelection = STOPPED_SCREEN_TIME;
   updateSystemState(STATE_STOPPED);
 }
 
@@ -1415,6 +1839,11 @@ static void updateStoppedScreenSetting(void)
   {
     g_UserSettings.settingsScreenSelection = SETTINGS_SCREEN_AUTO_RESTART;
     updateSystemState(STATE_SETTINGS);
+  }
+  else if(g_UserSettings.stoppedScreenSelection == STOPPED_SCREEN_PROFILES)
+  {
+    g_UserSettings.profileSlot = 0;
+    updateSystemState(STATE_PROFILES);
   }
   else if(g_UserSettings.stoppedScreenSelection == STOPPED_SCREEN_INFO)
   {
@@ -1595,7 +2024,7 @@ static void drawStoppedScreen(bool const fanIsOn, float const temperature, uint1
     display.print(F("SETTINGS >"));
     display.setTextColor(WHITE);
   }
-  else if(g_UserSettings.stoppedScreenSelection == STOPPED_SCREEN_INFO)
+  else if(g_UserSettings.stoppedScreenSelection == STOPPED_SCREEN_PROFILES)
   {
     drawCaseCount(0, casesAnnealed);
     drawTemperature(8, temperature);
@@ -1603,14 +2032,27 @@ static void drawStoppedScreen(bool const fanIsOn, float const temperature, uint1
     display.print(F("SETTINGS >"));
     display.setCursor(RIGHT_PANEL_X,24);
     display.setTextColor(BLACK, WHITE);
+    display.print(F("PROFILES >"));
+    display.setTextColor(WHITE);
+  }
+  else if(g_UserSettings.stoppedScreenSelection == STOPPED_SCREEN_INFO)
+  {
+    drawTemperature(0, temperature);
+    display.setCursor(RIGHT_PANEL_X,8);
+    display.print(F("SETTINGS >"));
+    display.setCursor(RIGHT_PANEL_X,16);
+    display.print(F("PROFILES >"));
+    display.setCursor(RIGHT_PANEL_X,24);
+    display.setTextColor(BLACK, WHITE);
     display.print(F("INFO >"));
     display.setTextColor(WHITE);
   }
   else
   {
-    drawTemperature(0, temperature);
-    display.setCursor(RIGHT_PANEL_X,8);
+    display.setCursor(RIGHT_PANEL_X,0);
     display.print(F("SETTINGS >"));
+    display.setCursor(RIGHT_PANEL_X,8);
+    display.print(F("PROFILES >"));
     display.setCursor(RIGHT_PANEL_X,16);
     display.print(F("INFO >"));
     display.setCursor(RIGHT_PANEL_X,24);
@@ -1646,6 +2088,150 @@ static void drawSettingsScreen(void)
   if(g_UserSettings.settingsScreenSelection == SETTINGS_SCREEN_BACK) display.setTextColor(BLACK, WHITE);
   display.print(F("BACK >"));
   display.setTextColor(WHITE);
+  display.drawLine(54,0,54,32,WHITE);
+  display.display();
+}
+
+/*---------------------------------------------------------------------------*/
+/*! @brief      Draw a profile-slot selector, including a visible Back option.
+*//*-------------------------------------------------------------------------*/
+static void drawProfilesScreen(void)
+{
+  tCartridgeProfile profile;
+  display.clearDisplay();
+  drawTimePanel(false);
+  display.setCursor(RIGHT_PANEL_X, 0);
+  if(g_UserSettings.profileSlot >= PROFILE_COUNT)
+  {
+    display.print(F("PROFILES"));
+    display.setCursor(RIGHT_PANEL_X, 24);
+    display.setTextColor(BLACK, WHITE);
+    display.print(F("BACK >"));
+    display.setTextColor(WHITE);
+  }
+  else
+  {
+    // A dedicated name row shows all ten stored characters without clipping.
+    display.print(F("PROFILES"));
+    display.setCursor(RIGHT_PANEL_X, 8);
+    if(loadProfile(g_UserSettings.profileSlot, &profile))
+    {
+      display.write((uint8_t *)profile.name, PROFILE_NAME_LENGTH);
+    }
+    else
+    {
+      display.print(F("PROFILE "));
+      display.print(g_UserSettings.profileSlot + 1);
+    }
+    display.setCursor(RIGHT_PANEL_X, 24);
+    display.setTextColor(BLACK, WHITE);
+    display.print(F("OPEN >"));
+    display.setTextColor(WHITE);
+  }
+  display.drawLine(54,0,54,32,WHITE);
+  display.display();
+}
+
+/*---------------------------------------------------------------------------*/
+/*! @brief      Draw the scrolling action list for one profile.
+*//*-------------------------------------------------------------------------*/
+static void drawProfileActionsScreen(void)
+{
+  static char const * const actions[] = { "LOAD >", "SAVE >", "RENAME >", "DELETE >", "BACK >" };
+  uint8_t row;
+  uint8_t action;
+  display.clearDisplay();
+  drawTimePanel(false);
+  display.setCursor(RIGHT_PANEL_X, 0);
+  display.print(F("P"));
+  display.print(g_UserSettings.profileSlot + 1);
+  display.print(F(" ACTIONS"));
+  for(row = 0; row < 3; row++)
+  {
+    action = g_UserSettings.profileActionSelection + row;
+    if(action >= PROFILE_ACTION_SELECTION_COUNT)
+    {
+      break;
+    }
+    display.setCursor(RIGHT_PANEL_X, 8 + (row * 8));
+    if(action == g_UserSettings.profileActionSelection) display.setTextColor(BLACK, WHITE);
+    display.print(actions[action]);
+    display.setTextColor(WHITE);
+  }
+  display.drawLine(54,0,54,32,WHITE);
+  display.display();
+}
+
+/*---------------------------------------------------------------------------*/
+/*! @brief      Draw the fixed-width arcade-style profile-name editor.
+*//*-------------------------------------------------------------------------*/
+static void drawProfileNameEditScreen(void)
+{
+  display.clearDisplay();
+  display.setTextSize(1);
+  display.setCursor(0, 0);
+  display.print(F("NAME P"));
+  display.print(g_UserSettings.profileSlot + 1);
+  display.setCursor(0, 10);
+  display.write((uint8_t *)g_ProfileEditor.name, PROFILE_NAME_LENGTH);
+  display.setCursor(g_UserSettings.profileNameCursor * 6, 18);
+  if(g_UserSettings.profileNameCursor < PROFILE_NAME_LENGTH)
+  {
+    display.print(F("^"));
+  }
+  display.setCursor(0, 24);
+  if(g_UserSettings.profileNameCursor == PROFILE_NAME_LENGTH) display.setTextColor(BLACK, WHITE);
+  if(g_UserSettings.profileNameCursor == PROFILE_NAME_LENGTH)
+  {
+    display.print(F("SAVE >"));
+  }
+  else if(g_UserSettings.profileNameCursor == PROFILE_NAME_LENGTH + 1)
+  {
+    display.setTextColor(BLACK, WHITE);
+    display.print(F("BACK >"));
+  }
+  else
+  {
+    display.print(F("SAVE >"));
+  }
+  display.setTextColor(WHITE);
+  display.display();
+}
+
+/*---------------------------------------------------------------------------*/
+/*! @brief      Ask for explicit UP confirmation before deleting a profile.
+*//*-------------------------------------------------------------------------*/
+static void drawProfileDeleteConfirmScreen(void)
+{
+  display.clearDisplay();
+  display.setTextSize(1);
+  display.setCursor(0, 0);
+  display.print(F("DELETE P"));
+  display.print(g_UserSettings.profileSlot + 1);
+  display.setCursor(0, 12);
+  if(g_UserSettings.profileDeleteConfirmed) display.setTextColor(BLACK, WHITE);
+  display.print(F("DELETE >"));
+  display.setTextColor(WHITE);
+  display.setCursor(0, 24);
+  if(!g_UserSettings.profileDeleteConfirmed) display.setTextColor(BLACK, WHITE);
+  display.print(F("BACK >"));
+  display.setTextColor(WHITE);
+  display.display();
+}
+
+/*---------------------------------------------------------------------------*/
+/*! @brief      Acknowledge that a profile was written before returning to it.
+*//*-------------------------------------------------------------------------*/
+static void drawProfileSavedScreen(void)
+{
+  display.clearDisplay();
+  drawTimePanel(false);
+  display.setCursor(RIGHT_PANEL_X, 0);
+  display.print(F("PROFILES"));
+  display.setTextSize(2);
+  display.setCursor(RIGHT_PANEL_X, 12);
+  display.print(F("SAVED"));
+  display.setTextSize(1);
   display.drawLine(54,0,54,32,WHITE);
   display.display();
 }

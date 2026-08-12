@@ -13,13 +13,13 @@ machine attended before relying on any automatic operation.
 
 The left side of the OLED continues to show the anneal time. The normal
 right-hand list remains `FAN`, operating mode, case count, and temperature.
-MODE moves a visible selection through TIME, mode, `SETTINGS >`,
+MODE moves a visible selection through TIME, mode, `SETTINGS >`, `PROFILES >`,
 `INFO >`, and `DIAGNOSTICS>`; the list scrolls upward to reveal each menu
 item. The top-right row always shows `FAN ON` or `FAN OFF` in the normal view.
 
 | Button | Stopped-screen action |
 | --- | --- |
-| MODE | Select the next item: `TIME`, `MODE`, `SETTINGS >`, `INFO >`, or `DIAGNOSTICS>` |
+| MODE | Select the next item: `TIME`, `MODE`, `SETTINGS >`, `PROFILES >`, `INFO >`, or `DIAGNOSTICS>` |
 | UP | Change TIME or MODE, or enter the selected menu |
 | START | Start the selected operating mode |
 
@@ -31,15 +31,16 @@ anneal-cycle current measurement.
 | TIME | Add 0.1 seconds; wrap from 8.0 s to 2.0 s |
 | MODE | Cycle single-shot, free-run, and auto-feed |
 | SETTINGS > | Open the Restart/Dump settings screen |
+| PROFILES > | Open the cartridge-profile selector |
 | INFO > | Open the low-current guard and learned-baseline screen |
 | DIAGNOSTICS> | Open the sensor and reset-diagnostics screen |
 
 Within **Settings**, MODE selects `RESTART`, `DUMP`, or `BACK >`; UP toggles
 the selected setting or returns at `BACK >`. Diagnostics displays a visible
-highlighted `BACK >`; UP, MODE, or START returns to the normal stopped screen.
-Info keeps `BACK >` visible while MODE scrolls its detail rows; UP or START
-returns to the normal stopped screen. START from Settings also returns to the
-stopped screen, so it cannot start an anneal cycle while navigating a menu.
+highlighted `BACK >`; UP returns to the stopped screen. Info keeps `BACK >`
+visible while MODE scrolls its detail rows; UP returns to the stopped screen.
+START does not leave menus. Every `BACK >` returns to the home-list item that
+opened it, while `LOAD >` deliberately returns to `TIME`, ready to run.
 
 On the first startup, press START once to display the existing case-height and
 time warning, press it again to acknowledge the warning, then press START a
@@ -59,6 +60,31 @@ the gate. Changing to another operating mode turns `DUMP` off.
 During annealing, the OLED retains its original full-size current and remaining
 time layout. During the dropping interval, it shows a full-size `DROPPING`
 message and the live temperature in the lower row.
+
+### Cartridge profiles
+
+`PROFILES >` stores up to eight named cartridge profiles in EEPROM. A profile
+contains anneal time, operating mode, automatic-restart preference, and the
+dump-button preference. The learned current baseline is deliberately not
+saved: it is specific to the brass being processed and is rebuilt for each
+run.
+
+All profile slots are blank on first use, but the selector labels them `PROFILE 1` through `PROFILE 8` until they are
+renamed. MODE selects profile slots 1–8 or `BACK >`; UP opens the selected slot. In the
+profile action menu, MODE selects `LOAD`, `SAVE`, `RENAME`, `DELETE`, or
+`BACK >`; UP performs the highlighted action. Saving an empty slot creates
+`PROFILE 1`–`PROFILE 8` and opens the name editor. In the editor, UP cycles the
+selected character through `A-Z`, `0-9`, `-`, `.`, and space; MODE moves the
+cursor through every character and then the visible `SAVE >` item; UP at
+`SAVE >` saves and briefly shows `SAVED`. Saving an existing profile also
+briefly shows `SAVED`. One more MODE press selects `BACK >`; UP there discards name
+changes. Delete confirmation has visible `DELETE >` and `BACK >` items; MODE
+selects either and UP performs the selected action. START does not leave menus:
+every menu exits through its visible `BACK >` item and UP.
+
+Loading a profile applies all settings together and also updates the normal
+saved settings. If `DUMP` is saved on, loading preserves the existing safety
+rule: dump mode forces free-run and keeps the feeder disabled.
 
 ### Diagnostics and information
 
@@ -122,7 +148,7 @@ Before unattended use or publication of a release:
 - Compile for the Arduino Uno with the required Adafruit, DallasTemperature,
   and OneWire libraries; record the compiler's program-storage and dynamic-RAM
   report.
-- Verify stopped-screen navigation: TIME → MODE → SETTINGS → INFO →
+- Verify stopped-screen navigation: TIME → MODE → SETTINGS → PROFILES → INFO →
   DIAGNOSTICS → TIME. At each menu item, press UP and confirm the intended
   submenu opens; confirm Settings `BACK >`, Diagnostics `BACK >`, and Info
   UP/START each return to the normal stopped screen.
@@ -135,6 +161,9 @@ Before unattended use or publication of a release:
   detection behaviour.
 - Verify restart preference persistence with a current sensor fitted.
 - Exercise free-run, auto-feed, dump OFF, and dump ON behavior.
+- Save, rename, load, and delete a profile. Confirm loaded time, mode,
+  restart, and dump settings survive a power cycle; confirm a dump-enabled
+  profile loads in free-run with the feeder disabled.
 - Verify cooldown entry above 55 C, restart only below 40 C, and START cancellation.
 - Disconnect the temperature sensor while stopped and while annealing: verify
   `TEMP ERROR` / `CHECK TEMP`, annealer-off behavior, fan operation, and that
