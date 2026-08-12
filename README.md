@@ -101,6 +101,20 @@ remain available while cooling. The temperature is suffixed with `COOL!`, and
 START cannot begin another run until it drops below the 40 °C hysteresis
 threshold.
 
+### SimulIDE harness
+
+The repository includes [`simulide/nzhs-annealer.sim1`](simulide/nzhs-annealer.sim1), a
+software-only Uno harness for exercising the OLED UI, buttons, profile
+persistence, temperature input, and logical output transitions. It has been
+laid out and tested with **SimulIDE 1.1.0 SR2** on macOS. Download SimulIDE 1
+from the [official downloads page](https://simulide.com/p/downloads/); version
+1 is the project's stable release. The harness always loads the tracked normal
+Uno HEX, not a simulator-specific firmware build. It does not replace hardware
+safety testing; see [the harness instructions](simulide/README.md) for setup,
+controls, and limits.
+
+![SimulIDE Uno harness](simulide/nzhs-annealer-simulide.png)
+
 ### Diagnostics and information
 
 The diagnostics screen retains the normal left-side time panel and divider.
