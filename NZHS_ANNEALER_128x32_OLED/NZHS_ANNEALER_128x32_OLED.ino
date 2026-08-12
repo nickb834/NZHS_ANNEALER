@@ -1528,7 +1528,8 @@ static void loadUserSettings(void)
   g_UserSettings.profileDeleteConfirmed = false;
   if(g_UserSettings.dumpButtonEnabled)
   {
-    setFreeRunMode();
+    // Manual case handling must not resume unattended after cooldown.
+    setDumpButtonEnabled(true);
   }
 }
 
@@ -1662,8 +1663,9 @@ static void makeDefaultProfile(uint8_t const slot, tCartridgeProfile * const pro
 static void applyProfile(tCartridgeProfile const * const profile)
 {
   g_UserSettings.annealTime_ms = profile->annealTime_ms;
-  g_UserSettings.autoRestartAfterCooldown = (profile->flags & PROFILE_FLAG_AUTO_RESTART) != 0;
   g_UserSettings.dumpButtonEnabled = (profile->flags & PROFILE_FLAG_DUMP_BUTTON) != 0;
+  g_UserSettings.autoRestartAfterCooldown =
+    ((profile->flags & PROFILE_FLAG_AUTO_RESTART) != 0) && !g_UserSettings.dumpButtonEnabled;
   CurrentMode = (ModeList)profile->mode;
   EEPROM.update(EEPROM_ADDRESS_ANNEAL_TIME, g_UserSettings.annealTime_ms / 100);
   EEPROM.update(EEPROM_ADDRESS_AUTO_RESTART, g_UserSettings.autoRestartAfterCooldown ? 1 : 0);
@@ -1825,6 +1827,10 @@ static void setDumpButtonEnabled(bool const enabled)
   if(enabled)
   {
     setFreeRunMode();
+    // Dump mode requires the operator to handle every case, so do not allow
+    // an unattended restart after a temperature cooldown.
+    g_UserSettings.autoRestartAfterCooldown = false;
+    EEPROM.update(EEPROM_ADDRESS_AUTO_RESTART, 0);
   }
   EEPROM.update(EEPROM_ADDRESS_DUMP_BUTTON, enabled ? 1 : 0);
 }
@@ -1899,6 +1905,12 @@ static void updateSettingsScreenSetting(void)
   if(g_UserSettings.settingsScreenSelection == SETTINGS_SCREEN_AUTO_RESTART)
   {
     g_UserSettings.autoRestartAfterCooldown = !g_UserSettings.autoRestartAfterCooldown;
+    if(g_UserSettings.autoRestartAfterCooldown)
+    {
+      // Automatic restart cannot coexist with manual dump handling.
+      g_UserSettings.dumpButtonEnabled = false;
+      EEPROM.update(EEPROM_ADDRESS_DUMP_BUTTON, 0);
+    }
     EEPROM.update(EEPROM_ADDRESS_AUTO_RESTART, g_UserSettings.autoRestartAfterCooldown ? 1 : 0);
   }
   else if(g_UserSettings.settingsScreenSelection == SETTINGS_SCREEN_DUMP_BUTTON)

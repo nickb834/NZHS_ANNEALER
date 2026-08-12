@@ -53,9 +53,11 @@ third time to begin the first anneal cycle.
   countdown for manual loading before the next cycle.
 - **Auto-feed:** use the stepper feeder to run continuously.
 
-`DUMP: ON` selects free-run and disables the feeder. While an active free-run
-cycle is in progress, hold MODE to open the drop gate and release it to close
-the gate. Changing to another operating mode turns `DUMP` off.
+`DUMP: ON` selects free-run and disables the feeder. It also forces `RESTART`
+off, because manual case handling must not resume unattended after cooldown.
+Conversely, enabling `RESTART` turns `DUMP` off. While an active free-run cycle
+is in progress, hold MODE to open the drop gate and release it to close the
+gate. Changing to another operating mode turns `DUMP` off.
 
 During annealing, the OLED retains its original full-size current and remaining
 time layout. During the dropping interval, it shows a full-size `DROPPING`
