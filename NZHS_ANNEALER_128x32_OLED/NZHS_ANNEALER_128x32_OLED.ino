@@ -8,7 +8,9 @@
 //--Includes-------------------------------------------------------------------
 #include <SPI.h>
 #include <Wire.h>
+#include <avr/io.h>
 #include <avr/wdt.h>
+#include <util/atomic.h>
 #include <Adafruit_GFX.h>
 #include <Adafruit_SSD1306.h>
 #include <EEPROM.h>
@@ -16,7 +18,7 @@
 #include <DallasTemperature.h>
 
 //-- macros---------------------------------------------------------------
-//#define DEBUG //defining DEBUG will remove the splash screen and enable serial debug info
+//#define DEBUG //removes the splash screen and enables serial reset diagnostics at 115200 baud
 #define SERVO
 //                          Major Version
 //                          | Minor Version
@@ -24,7 +26,7 @@
 //                          | | |
 //                          | | |
 //                          | | |
-#define SOFTWARE_VERSION F("3.8.0")
+#define SOFTWARE_VERSION F("4.0.0")
 #define SCREEN_WIDTH 128 // OLED display width, in pixels
 #define SCREEN_HEIGHT 32 // OLED display height, in pixels
 #define PSU_OVERCURRENT 12300 //12.3A
@@ -33,12 +35,23 @@
 #define TEMP_LIMIT 55 //capacitor temperature limit degC
 #define TEMP_CONVERSION_TIME 120 //measurement time for DS18B20 9,10,11,12 bit = 95ms, 190ms, 375ms, 750ms
 #define TEMP_HYSTERESIS 15 //define how much temperature needs to drop to resume
+#define TEMP_SENSOR_MIN_C -55.0f //DS18B20 lower measurement limit
+#define TEMP_SENSOR_MAX_C 125.0f //DS18B20 upper measurement limit
 #define DROP_TIME 500 //time to drop the case in ms
 #define RELOAD_TIME 5000 //time for user to load a new case in free run mode (ms)
 #define RELOAD_TIME_AUTO__FEED 2000 //time to feed case in auto feed mode (ms) - recommend leaving at 2000
 #define MIN_ANNEAL_TIME 2000 //min anneal time in ms
 #define MAX_ANNEAL_TIME 8000 //max anneal time in ms
-#define LONG_PRESS_HOLD_TIME 15 //loop iterations for long button press e.g. 15 x 100ms = 1.5s press and hold
+#define LONG_PRESS_HOLD_TIME 15 //main-loop iterations before UP resets the selected time to 2.0 seconds
+#define LOW_CURRENT_IGNORED_CYCLES 1 //first anneal cycle is ignored while the system settles
+#define LOW_CURRENT_BASELINE_CYCLES 5 //accepted normal cycles retained in the moving baseline window
+#define LOW_CURRENT_CONSECUTIVE_CYCLES 1 //low-current cycles that trigger a fault
+#define LOW_CURRENT_RATIO_PERCENT 85 //a cycle below this percentage of the baseline is considered low current
+#define CURRENT_SENSOR_DETECTION_MA 100 //minimum anneal-cycle average that verifies the fitted current sensor
+#define RESET_DIAGNOSTIC_MAGIC 0x5A
+#define INTERNAL_BANDGAP_MV 1100 //nominal ATmega328P band-gap voltage; calibrate if absolute accuracy is required
+#define INFO_SCREEN_SCROLL_COUNT 3
+#define SUPPLY_VOLTAGE_SAMPLE_PERIOD 1000 //refresh the Info-screen AVcc reading once per second
 #define LOOP_TIME 120  //ms per main loop iteration
 #define COOLDOWN_PERIOD 300000 //Cooling period in milliseconds
 #define DISPLAY_ADDRESS 0x3C
@@ -52,11 +65,19 @@
 #define CASE_FEEDER_HOPPER_START 70*STEPPER_MICROSTEPS*STEPPER_SCALING_FACTOR
 #define CASE_FEEDER_HOPPER_END 130*STEPPER_MICROSTEPS*STEPPER_SCALING_FACTOR
 
-#define MODE_KEY_USED  //defines the use of the mode key input. comment out this #define to disable mode selection and reassign the mode key input to force case drop in the event of a stuck case
 #define SHOW_CASE_COUNT //This enables the display of the total number of cases annealed since powerup. Comment this out if you don't want to see the cases annealed counter.
 
 // temp sensor pin asignment DS1820
 #define ONE_WIRE_BUS 8
+
+#define EEPROM_ADDRESS_ANNEAL_TIME 0
+#define EEPROM_ADDRESS_AUTO_RESTART 1
+#define EEPROM_ADDRESS_CONFIG_MAGIC 2
+#define EEPROM_CONFIG_MAGIC 0xA4
+#define EEPROM_ADDRESS_DUMP_BUTTON 3
+#define EEPROM_ADDRESS_DUMP_BUTTON_MAGIC 4
+#define EEPROM_DUMP_BUTTON_MAGIC 0x3C
+#define RIGHT_PANEL_X 56
 
 Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, -1, 200000, 200000);
 // Setup a oneWire instance to communicate with any OneWire devices
@@ -66,13 +87,14 @@ DallasTemperature sensors(&oneWire);
 
 // Global variables :(
 DeviceAddress tempDeviceAddress;
+// Cached at setup for the stopped-screen temperature display.
 static uint8_t NumberDallasTempDevices = 0;
 static bool CurrentSensorPresent = 0;
 static uint16_t psuCurrentZeroOffset = 0;
-static uint16_t StepsToGo = 0;
-static uint16_t StepsFromHome = 0;
-static bool StepToggle = 0;
-static uint32_t SystemTimeTarget;
+static volatile uint16_t StepsToGo = 0;
+static volatile uint16_t StepsFromHome = 0;
+static volatile bool StepToggle = 0;
+static volatile uint32_t SystemTimeTarget;
 
 //--define state machine states-----------------------------------------------------------
 typedef enum tStateMachineStates
@@ -85,8 +107,12 @@ typedef enum tStateMachineStates
   STATE_COOLDOWN,
   STATE_JUST_BOOTED,
   STATE_SHOW_WARNING,
-  STATE_SHOW_SOFTWARE_VER,
+  STATE_SETTINGS,
+  STATE_DIAGNOSTICS,
+  STATE_INFO,
   STATE_OVERCURRENT_WARNING,
+  STATE_LOW_CURRENT_WARNING,
+  STATE_TEMPERATURE_SENSOR_WARNING,
   STATE_UNKNOWN,
 } tStateMachineStates;
 
@@ -96,6 +122,56 @@ typedef enum ModeList
   MODE_FREE_RUN,
   MODE_AUTOMATIC,
 } ModeList;
+
+typedef enum tStoppedScreenSelection
+{
+  STOPPED_SCREEN_TIME = 0,
+  STOPPED_SCREEN_MODE,
+  STOPPED_SCREEN_SETTINGS,
+  STOPPED_SCREEN_INFO,
+  STOPPED_SCREEN_DIAGNOSTICS,
+  STOPPED_SCREEN_SELECTION_COUNT,
+} tStoppedScreenSelection;
+
+typedef enum tSettingsScreenSelection
+{
+  SETTINGS_SCREEN_AUTO_RESTART = 0,
+  SETTINGS_SCREEN_DUMP_BUTTON,
+  SETTINGS_SCREEN_BACK,
+  SETTINGS_SCREEN_SELECTION_COUNT,
+} tSettingsScreenSelection;
+
+typedef struct tUserSettings
+{
+  uint16_t annealTime_ms;
+  bool autoRestartAfterCooldown;
+  bool dumpButtonEnabled;
+  tStoppedScreenSelection stoppedScreenSelection;
+  tSettingsScreenSelection settingsScreenSelection;
+} tUserSettings;
+
+typedef struct tRunSafetyState
+{
+  bool cooldownRestartPending;
+  uint32_t annealingCurrentTotal_ma;
+  uint16_t annealingCurrentSamples;
+  uint32_t restartCurrentTotal_ma;
+  uint16_t restartCurrentSamples;
+  uint16_t baselineCurrent_ma;
+  uint16_t baselineCurrentWindow_ma[LOW_CURRENT_BASELINE_CYCLES];
+  uint8_t ignoredCurrentCycles;
+  uint8_t baselineCurrentCycles;
+  uint8_t baselineCurrentWindowIndex;
+  uint8_t lowCurrentConsecutiveCycles;
+} tRunSafetyState;
+
+typedef struct tResetDiagnostics
+{
+  uint8_t magic;
+  uint8_t resetFlags;
+  uint8_t lastSystemState;
+  uint8_t previousSystemState;
+} tResetDiagnostics;
 
 //--global constant declarations-----------------------------------------
 static const uint8_t g_StartStopButtonPin   = 2;
@@ -256,18 +332,35 @@ const unsigned char projectile2 [] PROGMEM = {
 
 
 //-- global variables declarations----------------------------------------
-static tStateMachineStates g_SystemState = STATE_JUST_BOOTED;
+static volatile tStateMachineStates g_SystemState = STATE_JUST_BOOTED;
 static tStateMachineStates g_SystemStatePrev = STATE_UNKNOWN;
 
-#ifdef MODE_KEY_USED
-  static ModeList CurrentMode = MODE_SINGLE_SHOT; //mode key is used so set default mode to single shot
-#else
-  static ModeList CurrentMode = MODE_FREE_RUN; //mode key is not used so set default mode to free run
-#endif
+static ModeList CurrentMode = MODE_SINGLE_SHOT;
+static tUserSettings g_UserSettings;
+static tRunSafetyState g_RunSafety;
+static uint8_t g_InfoScreenScroll = 0;
+static uint16_t g_SupplyVoltage_mv = 0;
+static uint32_t g_SupplyVoltageSampleTime = 0;
+// Deliberately not initialized by the C runtime, so a watchdog reset can
+// preserve the last state reached by the application.
+static tResetDiagnostics g_ResetDiagnostics __attribute__((section(".noinit")));
+
+// Run before normal C/C++ initialization. Capture the AVR reset flags and
+// disable a watchdog that may still be active after a watchdog reset. The Uno
+// bootloader can clear MCUSR first, so the recorded cause is best-effort.
+void captureResetDiagnostics(void) __attribute__((naked, used, section(".init3")));
+void captureResetDiagnostics(void)
+{
+  g_ResetDiagnostics.resetFlags = MCUSR;
+  MCUSR = 0;
+  wdt_disable();
+}
 
 //-- function declarations------------------------------------------------
-static tStateMachineStates updateSystemState(tStateMachineStates const state);
+static void updateSystemState(tStateMachineStates const state);
 static bool hasSystemStateChanged(void);
+static inline bool hasTimeElapsed(uint32_t const timeTarget, uint32_t const currentTime);
+static void setSystemTimeTarget(uint32_t const timeTarget);
 static bool readStartButton(void);
 static bool readModeButton(void);
 static bool readUpButton(void);
@@ -281,7 +374,8 @@ static void turnModeLedOn(void);
 static void turnModeLedOff(void);
 static void turnCoolingFanOn(void);
 static void turnCoolingFanOff(void);
-static uint16_t readPsuVoltage_mv(void);
+static uint16_t readSupplyVoltage_mv(void);
+static void refreshSupplyVoltage(void);
 static uint16_t readPsuCurrent_ma(void);
 static uint16_t readAnnealingTime_ms(void);
 static void preloadCase(void);
@@ -289,6 +383,34 @@ static void loadCase(void);
 static void returnCaseFeederHome(void);
 static bool caseFeederStillMoving(void);
 static float readTemperature(uint8_t);
+static bool isTemperatureReadingValid(float const temperature);
+static void addStepsToGo(uint16_t const steps);
+static void setStepsToGo(uint16_t const steps);
+static uint16_t getStepsToGo(void);
+static uint16_t getStepsFromHome(void);
+static void loadUserSettings(void);
+static void resetRunSafetyState(void);
+static void enterCooldown(bool const allowAutomaticRestart, bool const cycleStopRequested);
+static void advanceStoppedScreenSelection(void);
+static void advanceSettingsScreenSelection(void);
+static void returnToStoppedScreen(void);
+static void setFreeRunMode(void);
+static void setDumpButtonEnabled(bool const enabled);
+static void cycleCurrentMode(void);
+static void updateStoppedScreenSetting(void);
+static void updateSettingsScreenSetting(void);
+static void advanceInfoScreenScroll(void);
+static bool lowCurrentGuardFault(uint16_t const cycleAverageCurrent_ma);
+static void drawCurrentMode(uint8_t const y, bool const selected);
+static void drawTemperature(uint8_t const y, float const temperature);
+static void drawCaseCount(uint8_t const y, uint16_t const casesAnnealed);
+static void drawTimePanel(bool const selected);
+static void drawStoppedScreen(bool const fanIsOn, float const temperature, uint16_t const casesAnnealed);
+static void drawSettingsScreen(void);
+static void drawDiagnosticsScreen(void);
+static void drawInfoScreen(void);
+static void drawResetDiagnostics(void);
+static void printResetDiagnostics(void);
 
 /*---------------------------------------------------------------------------*/
 /*! @brief      Initialize the Case Annealer.
@@ -298,9 +420,27 @@ static float readTemperature(uint8_t);
 *//*-------------------------------------------------------------------------*/
 void setup()
 {
+  if(g_ResetDiagnostics.magic != RESET_DIAGNOSTIC_MAGIC)
+  {
+    g_ResetDiagnostics.lastSystemState = STATE_UNKNOWN;
+  }
+  g_ResetDiagnostics.previousSystemState = g_ResetDiagnostics.lastSystemState;
+  g_ResetDiagnostics.magic = RESET_DIAGNOSTIC_MAGIC;
+
   //TCCR0B = TCCR0B & B11111000 | B00000101; //PWM on D5 & D6 set to 61.04Hz Timer 0 -- Timer Used for system ms tick
  // TCCR2B = TCCR2B & B11111000 | B00000110; //PWM on D3 & D11 set to 122.55Hz Timer 2  <--- tiner 2
   TCCR1B = TCCR1B & B11111000 | B00000101; //PWM on D9 & D10 of 30.64 Hz Timer 1   <---- USE IO9 PWM for drop gate Servo
+
+  if(EEPROM.read(EEPROM_ADDRESS_CONFIG_MAGIC) != EEPROM_CONFIG_MAGIC)
+  {
+    EEPROM.update(EEPROM_ADDRESS_AUTO_RESTART, 0);
+    EEPROM.update(EEPROM_ADDRESS_CONFIG_MAGIC, EEPROM_CONFIG_MAGIC);
+  }
+  if(EEPROM.read(EEPROM_ADDRESS_DUMP_BUTTON_MAGIC) != EEPROM_DUMP_BUTTON_MAGIC)
+  {
+    EEPROM.update(EEPROM_ADDRESS_DUMP_BUTTON, 0);
+    EEPROM.update(EEPROM_ADDRESS_DUMP_BUTTON_MAGIC, EEPROM_DUMP_BUTTON_MAGIC);
+  }
 
 //set timer2 interrupt
   TCCR2A = 0;// set entire TCCR2A register to 0
@@ -342,6 +482,7 @@ void setup()
   Serial.begin(115200);
   delay(20);
   Serial.println(F("Debug active."));
+  printResetDiagnostics();
   #endif
 
   delay(200);
@@ -388,10 +529,11 @@ void setup()
     delay(10);
   }
   psuCurrentZeroOffset = psuCurrentZeroOffset >> 4; //divide by 16
-  if( psuCurrentZeroOffset > 200) //see if there is a sensor on the ADC pin. should be mid-rail with no current
+  if(psuCurrentZeroOffset > 200) //see if there is a sensor on the ADC pin. should be mid-rail with no current
   {
-    CurrentSensorPresent = 1;
+    CurrentSensorPresent = true;
   }
+  loadUserSettings();
 
   #ifdef DEBUG
   Serial.print(F("Software Version : "));
