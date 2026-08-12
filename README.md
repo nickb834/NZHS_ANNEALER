@@ -86,6 +86,12 @@ Loading a profile applies all settings together and also updates the normal
 saved settings. If `DUMP` is saved on, loading preserves the existing safety
 rule: dump mode forces free-run and keeps the feeder disabled.
 
+When cooldown begins, START cancels a pending automatic restart and returns to
+the normal home/menu UI. Settings, profiles, information, and diagnostics
+remain available while cooling. The temperature is suffixed with `COOL!`, and
+START cannot begin another run until it drops below the 40 °C hysteresis
+threshold.
+
 ### Diagnostics and information
 
 The diagnostics screen retains the normal left-side time panel and divider.

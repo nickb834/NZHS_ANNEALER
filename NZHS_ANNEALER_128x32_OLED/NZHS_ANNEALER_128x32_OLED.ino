@@ -190,6 +190,7 @@ typedef struct __attribute__((packed)) tCartridgeProfile
 typedef struct tRunSafetyState
 {
   bool cooldownRestartPending;
+  bool cooldownLockActive;
   uint32_t annealingCurrentTotal_ma;
   uint16_t annealingCurrentSamples;
   uint32_t restartCurrentTotal_ma;
@@ -726,6 +727,13 @@ void loop()
 
   temperature = readTemperature(0);
 
+  // Leaving the cooldown screen must not make a new run possible until the
+  // original hysteresis threshold has been reached.
+  if(g_RunSafety.cooldownLockActive && temperature < (TEMP_LIMIT - TEMP_HYSTERESIS))
+  {
+    g_RunSafety.cooldownLockActive = false;
+  }
+
   if(!isTemperatureReadingValid(temperature) &&
      g_SystemState != STATE_TEMPERATURE_SENSOR_WARNING)
   {
@@ -746,7 +754,11 @@ void loop()
   {
     if (g_SystemState == STATE_STOPPED)
     {
-      if(temperature > TEMP_LIMIT)
+      if(g_RunSafety.cooldownLockActive)
+      {
+        // The user may browse menus while cooling, but cannot start a run yet.
+      }
+      else if(temperature > TEMP_LIMIT)
       {
         enterCooldown(false, false);
       }
@@ -786,6 +798,7 @@ void loop()
     else if(g_SystemState == STATE_COOLDOWN)
     {
       g_RunSafety.cooldownRestartPending = false;
+      updateSystemState(STATE_STOPPED);
     }
     else if (g_SystemState != STATE_COOLDOWN) //confirm it's not in cooldown mode
     {
@@ -1505,6 +1518,7 @@ static void loadUserSettings(void)
 static void resetRunSafetyState(void)
 {
   g_RunSafety.cooldownRestartPending = false;
+  g_RunSafety.cooldownLockActive = false;
   g_RunSafety.annealingCurrentTotal_ma = 0;
   g_RunSafety.annealingCurrentSamples = 0;
   g_RunSafety.restartCurrentTotal_ma = 0;
@@ -1521,6 +1535,7 @@ static void resetRunSafetyState(void)
 *//*-------------------------------------------------------------------------*/
 static void enterCooldown(bool const allowAutomaticRestart, bool const cycleStopRequested)
 {
+  g_RunSafety.cooldownLockActive = true;
   g_RunSafety.cooldownRestartPending = allowAutomaticRestart &&
                                        g_UserSettings.autoRestartAfterCooldown &&
                                        CurrentMode != MODE_SINGLE_SHOT &&
@@ -1964,6 +1979,10 @@ static void drawTemperature(uint8_t const y, float const temperature)
     display.print(temperature, 1);
     display.print((char PROGMEM)248);
     display.print(F("C"));
+    if(g_RunSafety.cooldownLockActive)
+    {
+      display.print(F(" COOL!"));
+    }
   }
 }
 
