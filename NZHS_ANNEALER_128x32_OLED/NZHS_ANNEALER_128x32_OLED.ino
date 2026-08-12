@@ -690,23 +690,41 @@ void loop()
   {
     if (g_SystemState == STATE_STOPPED)
     {
-      if(Just_Booted) //Show the warning screen to set the right case heigth and time 1st time
+      if(temperature > TEMP_LIMIT)
       {
-        updateSystemState(STATE_SHOW_WARNING);
-        Just_Booted = 0;
-      }
-      else if (CurrentMode == MODE_AUTOMATIC)
-      {
-        updateSystemState(STATE_ANNEALING); //STATE_PRELOAD
+        enterCooldown(false, false);
       }
       else
       {
-        updateSystemState(STATE_ANNEALING);
+        resetRunSafetyState();
+        if(Just_Booted) //Show the warning screen to set the right case heigth and time 1st time
+        {
+          updateSystemState(STATE_SHOW_WARNING);
+          Just_Booted = 0;
+        }
+        else if (CurrentMode == MODE_AUTOMATIC)
+        {
+          updateSystemState(STATE_ANNEALING); //STATE_PRELOAD
+        }
+        else
+        {
+          updateSystemState(STATE_ANNEALING);
+        }
       }
     }
     else if(g_SystemState == STATE_SHOW_WARNING)
     {
       updateSystemState(STATE_STOPPED);
+    }
+    else if(g_SystemState == STATE_SETTINGS ||
+            g_SystemState == STATE_DIAGNOSTICS ||
+            g_SystemState == STATE_INFO)
+    {
+      returnToStoppedScreen();
+    }
+    else if(g_SystemState == STATE_COOLDOWN)
+    {
+      g_RunSafety.cooldownRestartPending = false;
     }
     else if (g_SystemState != STATE_COOLDOWN) //confirm it's not in cooldown mode
     {
@@ -723,59 +741,44 @@ void loop()
 
   if(modeKey == 0)
   {
-    #ifdef MODE_KEY_USED
-    	modeKeyDuration = 0;
-    #else
-	    if(modeKeyPrev)
-	    {
-	    	closeDropGate();
-	    }
-    #endif
+    if(modeKeyPrev && manualDumpInProgress)
+    {
+      closeDropGate();
+      manualDumpInProgress = false;
+    }
   }
   else
   {
-  	#ifdef MODE_KEY_USED
-	    if (!modeKeyPrev) //mode key just pressed?
-	    {
-	      if (g_SystemState == STATE_SHOW_SOFTWARE_VER || g_SystemState == STATE_OVERCURRENT_WARNING)
-	      {
-	        updateSystemState(STATE_STOPPED);
-	      }
-        else if (g_SystemState == STATE_STOPPED || g_SystemState == STATE_JUST_BOOTED)
-        {
-  	      if(CurrentMode == MODE_SINGLE_SHOT)
-  	      {
-  	        CurrentMode = MODE_FREE_RUN;
-            digitalWrite(g_FeederStepperEnPin,HIGH); //disable stepper driver in free run mode
-            turnModeLedOn();
-  	      }
-  	      else if(CurrentMode == MODE_FREE_RUN)
-  	      {
-            CurrentMode = MODE_AUTOMATIC;
-            digitalWrite(g_FeederStepperEnPin,LOW); //enable stepper driver in auto mode
-  	        turnModeLedOn();
-  	      }
-          else
-          {
-            CurrentMode = MODE_SINGLE_SHOT;
-            digitalWrite(g_FeederStepperEnPin,HIGH); //disable stepper driver in single shot mode
-            turnModeLedOff();
-          }
-        }
+    if (!modeKeyPrev) //mode key just pressed?
+    {
+      if (g_SystemState == STATE_OVERCURRENT_WARNING ||
+          g_SystemState == STATE_LOW_CURRENT_WARNING ||
+          g_SystemState == STATE_TEMPERATURE_SENSOR_WARNING)
+      {
+        updateSystemState(STATE_STOPPED);
       }
-	    if(g_SystemState == STATE_STOPPED | g_SystemState == STATE_JUST_BOOTED)
-        {
-          modeKeyDuration = modeKeyDuration + 1;
-          if (modeKeyDuration >= LONG_PRESS_HOLD_TIME) //long press
-            {
-              updateSystemState(STATE_SHOW_SOFTWARE_VER);
-              modeKeyDuration = 0;
-            }
-        }
-
-    #else
-      	openDropGate();
-    #endif
+      else if (g_SystemState == STATE_STOPPED || g_SystemState == STATE_JUST_BOOTED)
+      {
+        advanceStoppedScreenSelection();
+      }
+      else if(g_SystemState == STATE_SETTINGS)
+      {
+        advanceSettingsScreenSelection();
+      }
+      else if(g_SystemState == STATE_DIAGNOSTICS)
+      {
+        returnToStoppedScreen();
+      }
+      else if(g_SystemState == STATE_INFO)
+      {
+        advanceInfoScreenScroll();
+      }
+      else if(g_UserSettings.dumpButtonEnabled && CurrentMode == MODE_FREE_RUN)
+      {
+        openDropGate();
+        manualDumpInProgress = true;
+      }
+    }
   }
 
 
@@ -784,93 +787,34 @@ void loop()
     case STATE_STOPPED:
     {
       updateSystemState(g_SystemState);
-      if(upKey == 0)
+      if(g_UserSettings.stoppedScreenSelection == STOPPED_SCREEN_TIME)
       {
-        upKeyDuration = 0;
+        upKeyDuration = upKey ? upKeyDuration + 1 : 0;
+        if(upKeyDuration >= LONG_PRESS_HOLD_TIME)
+        {
+          g_UserSettings.annealTime_ms = MIN_ANNEAL_TIME;
+          annealTimeChanged = true;
+          upKeyDuration = 0;
+        }
       }
       else
       {
-        upKeyDuration = upKeyDuration + 1;
-      }
-      if(AnnealTime_ms > MAX_ANNEAL_TIME) // too long
-      {
-        AnnealTime_ms = MIN_ANNEAL_TIME;
-        annealTimeChanged = true;
+        upKeyDuration = 0;
       }
       if (upKey && !upKeyPrev) //up key pressed?
       {
-        AnnealTime_ms = AnnealTime_ms + 100;
-        annealTimeChanged = true;
-      }
-      if (upKeyDuration >= LONG_PRESS_HOLD_TIME) //long press resets time to 2s
-      {
-        AnnealTime_ms = MIN_ANNEAL_TIME;
-        upKeyDuration = 0;
-        annealTimeChanged = true;
-      }
-
-      display.clearDisplay();
-      display.setCursor(0, 0);
-      display.print(F("TIME"));
-
-      if(FanIsOn)
-      {
-         display.setCursor(60,0);
-         display.setTextSize(1);
-         display.println(F("FAN ON"));
-      }
-      else
-      {
-        display.println(F(" "));
+        if(g_UserSettings.stoppedScreenSelection == STOPPED_SCREEN_TIME)
+        {
+          annealTimeChanged = true;
+        }
+        updateStoppedScreenSetting();
+        if(g_SystemState != STATE_STOPPED)
+        {
+          break;
+        }
       }
 
-      #ifdef SHOW_CASE_COUNT
-      display.setTextSize(1);
-      display.setCursor(60,16);
-      display.print(F("CASES: "));
-      display.print(CasesAnnealed, 1);
-      #endif
-
-      display.setTextSize(2);
-
-      display.setCursor(0,16);
-      display.print(AnnealTime_ms/1000, DEC);
-      display.print(F("."));
-      display.print((AnnealTime_ms%1000)/100, DEC);
-      display.print(F("s"));
-      display.setCursor(60,24);
-      if(NumberDallasTempDevices != 0)
-      {
-        display.setTextSize(1);
-        display.print(temperature, 1);
-        display.print((char PROGMEM)248);
-        display.print(F("C"));
-        display.setTextSize(2);
-      }
-
-      if(CurrentMode == MODE_FREE_RUN)
-      {
-         display.setCursor(60,8);
-         display.setTextSize(1);
-         display.println(F("FREE RUN"));
-         display.setTextSize(2);
-      }
-      else if(CurrentMode == MODE_AUTOMATIC)
-      {
-         display.setCursor(60,8);
-         display.setTextSize(1);
-         display.println(F("AUTO FEED"));
-         display.setTextSize(2);
-      }
-      else if(CurrentMode == MODE_SINGLE_SHOT)
-      {
-         display.setCursor(60,8);
-         display.setTextSize(1);
-         display.println(F("ONE SHOT"));
-         display.setTextSize(2);
-      }
-      display.drawLine(54,0,54,32,WHITE);
-      display.display();
+      drawStoppedScreen(FanIsOn, temperature, CasesAnnealed);
       turnStartStopLedOff();
       turnAnnealerOff();
       psuCurrent_ma = readPsuCurrent_ma(); //--------- added this
@@ -878,11 +822,30 @@ void loop()
     }
     break;
 
+    case STATE_SETTINGS:
+    {
+      updateSystemState(g_SystemState);
+      if(upKey && !upKeyPrev)
+      {
+        updateSettingsScreenSetting();
+        if(g_SystemState != STATE_SETTINGS)
+        {
+          break;
+        }
+      }
+      drawSettingsScreen();
+    }
+    break;
+
     case STATE_ANNEALING:
     {
       if (hasSystemStateChanged())
       {
-        SystemTimeTarget = millis() + AnnealTime_ms;
+        setSystemTimeTarget(millis() + g_UserSettings.annealTime_ms);
+        g_RunSafety.annealingCurrentTotal_ma = 0;
+        g_RunSafety.annealingCurrentSamples = 0;
+        g_RunSafety.restartCurrentTotal_ma = 0;
+        g_RunSafety.restartCurrentSamples = 0;
         turnStartStopLedOn();
         turnAnnealerOn();
         cooling_timer = COOLDOWN_PERIOD + millis(); // 5 minute cooldown after last anneal
@@ -893,14 +856,9 @@ void loop()
       }
       updateSystemState(g_SystemState);
 
-      if (millis() > SystemTimeTarget)
-      {
-        turnAnnealerOff();
-        openDropGate();
-        updateSystemState(STATE_DROPPING);
-      }
-
       psuCurrent_ma = readPsuCurrent_ma();
+      g_RunSafety.restartCurrentTotal_ma += psuCurrent_ma;
+      g_RunSafety.restartCurrentSamples++;
       if(CurrentSensorPresent)
       {
         if(psuCurrent_ma >= PSU_OVERCURRENT) //overloaded the PSU - may damage the ZVS converter
@@ -910,11 +868,48 @@ void loop()
           updateSystemState(STATE_OVERCURRENT_WARNING);
           break;
         }
+        g_RunSafety.annealingCurrentTotal_ma += psuCurrent_ma;
+        g_RunSafety.annealingCurrentSamples++;
       }
 
-      if((SystemTimeTarget - millis()) < 100000)
+      uint32_t systemTimeTarget = SystemTimeTarget;
+      uint32_t currentTime = millis();
+      if (hasTimeElapsed(systemTimeTarget, currentTime))
       {
+        turnAnnealerOff();
+        if(g_RunSafety.restartCurrentSamples)
+        {
+          uint16_t restartCycleAverageCurrent_ma = g_RunSafety.restartCurrentTotal_ma / g_RunSafety.restartCurrentSamples;
+          if(restartCycleAverageCurrent_ma <= CURRENT_SENSOR_DETECTION_MA)
+          {
+            // This check applies only to automatic restart. The original A0
+            // sensor-presence detection remains in use for all other features.
+            g_UserSettings.autoRestartAfterCooldown = false;
+            EEPROM.update(EEPROM_ADDRESS_AUTO_RESTART, 0);
+          }
+        }
+
+        if(CurrentSensorPresent && g_RunSafety.annealingCurrentSamples)
+        {
+          uint16_t cycleAverageCurrent_ma = g_RunSafety.annealingCurrentTotal_ma / g_RunSafety.annealingCurrentSamples;
+          if(lowCurrentGuardFault(cycleAverageCurrent_ma))
+          {
+            turnStartStopLedOff();
+            updateSystemState(STATE_LOW_CURRENT_WARNING);
+            break;
+          }
+        }
+        openDropGate();
+        updateSystemState(STATE_DROPPING);
+        // Do not render the annealing countdown after expiry.
+        break;
+      }
+
+      if(!hasTimeElapsed(systemTimeTarget, currentTime))
+      {
+        uint32_t remainingTime = systemTimeTarget - currentTime;
         display.clearDisplay();
+        display.setTextSize(2);
         display.setCursor(0, 0);
         display.println(F("ANNEALING"));
         if(CurrentSensorPresent)
@@ -924,9 +919,9 @@ void loop()
           display.print((psuCurrent_ma%1000)/100, DEC);
           display.print(F("A  "));
         }
-        display.print((SystemTimeTarget - millis())/1000, DEC);
+        display.print(remainingTime/1000, DEC);
         display.print(F("."));
-        display.print(((SystemTimeTarget - millis())%1000)/100, DEC);
+        display.print((remainingTime%1000)/100, DEC);
         display.print(F("s"));
         display.display();
       }
@@ -943,15 +938,20 @@ void loop()
         {
           break;
         }
-        SystemTimeTarget = millis() + DROP_TIME;
+        setSystemTimeTarget(millis() + DROP_TIME);
       }
       updateSystemState(g_SystemState);
 
-      if (millis() < SystemTimeTarget) // wait time is not up, break.
+      if (!hasTimeElapsed(SystemTimeTarget, millis())) // wait time is not up, break.
       {
         display.clearDisplay();
-        display.setCursor(15, 8);
+        display.setTextSize(2);
+        display.setCursor(0, 0);
         display.println(F("DROPPING"));
+        display.setCursor(0, 16);
+        display.print(temperature, 1);
+        display.print((char PROGMEM)248);
+        display.print(F("C"));
         display.display();
         break;
       }
@@ -960,7 +960,7 @@ void loop()
 
       if(temperature > TEMP_LIMIT)
       {
-        updateSystemState(STATE_COOLDOWN); //Too hot, go to cooldown state
+        enterCooldown(true, Next_Cycle_Is_STOPPED);
         if(CurrentMode == MODE_AUTOMATIC)
         {
           returnCaseFeederHome();
@@ -1005,18 +1005,21 @@ void loop()
     {
       if (hasSystemStateChanged())
       {
-        SystemTimeTarget = millis() + RELOAD_TIME; //load time to fit new case
+        setSystemTimeTarget(millis() + RELOAD_TIME); //load time to fit new case
         if(CurrentMode == MODE_AUTOMATIC)
         	{
         		loadCase();
-            SystemTimeTarget = millis() + RELOAD_TIME_AUTO__FEED; //load time when in auto feed mode
+            setSystemTimeTarget(millis() + RELOAD_TIME_AUTO__FEED); //load time when in auto feed mode
         	}
       }
       updateSystemState(g_SystemState);
 
 
-      if (millis() < SystemTimeTarget)
+      uint32_t systemTimeTarget = SystemTimeTarget;
+      uint32_t currentTime = millis();
+      if (!hasTimeElapsed(systemTimeTarget, currentTime))
       {
+        uint32_t remainingTime = systemTimeTarget - currentTime;
         display.clearDisplay();
         display.setCursor(0, 0);
         #ifdef SHOW_CASE_COUNT
@@ -1024,9 +1027,9 @@ void loop()
         #else
           display.println(F("LOADING"));
         #endif
-        display.print((SystemTimeTarget - millis())/1000, DEC);
+        display.print(remainingTime/1000, DEC);
         display.print(".");
-        display.print(((SystemTimeTarget - millis())%1000)/100, DEC);
+        display.print((remainingTime%1000)/100, DEC);
         display.print("s");
 
         #ifdef SHOW_CASE_COUNT
@@ -1061,11 +1064,36 @@ void loop()
     }
     break;
 
+    case STATE_DIAGNOSTICS:
+    {
+      updateSystemState(g_SystemState);
+      if(upKey && !upKeyPrev)
+      {
+        returnToStoppedScreen();
+        break;
+      }
+      drawDiagnosticsScreen();
+    }
+    break;
+
+    case STATE_INFO:
+    {
+      updateSystemState(g_SystemState);
+      if(upKey && !upKeyPrev)
+      {
+        returnToStoppedScreen();
+        break;
+      }
+      drawInfoScreen();
+    }
+    break;
+
     case STATE_OVERCURRENT_WARNING:
     {
       updateSystemState(g_SystemState);
 
       display.clearDisplay();
+      display.setTextSize(2);
       display.setCursor(0, 0);
       display.println(F("! FAULT !"));
       display.println(F("CHECK COIL"));
@@ -1074,19 +1102,30 @@ void loop()
     }
     break;
 
-    case STATE_SHOW_SOFTWARE_VER:
+    case STATE_LOW_CURRENT_WARNING:
     {
       updateSystemState(g_SystemState);
-      display.setTextSize(1);
+
       display.clearDisplay();
-      display.setCursor(0, 0);
-      display.print(F("SW VER : "));
-      display.println(SOFTWARE_VERSION);
-      display.print(F("Temp sensor : "));
-      display.println(sensors.getDeviceCount());
-      display.print(F("Current sensor : "));
-      display.println(CurrentSensorPresent);
       display.setTextSize(2);
+      display.setCursor(0, 0);
+      display.println(F("CHECK CASE"));
+      display.setCursor(0, 16);
+      display.println(F("CURRENT LO!"));
+      display.display();
+
+    }
+    break;
+
+    case STATE_TEMPERATURE_SENSOR_WARNING:
+    {
+      updateSystemState(g_SystemState);
+      display.clearDisplay();
+      display.setTextSize(2);
+      display.setCursor(0, 0);
+      display.println(F("TEMP ERROR"));
+      display.setCursor(0, 16);
+      display.println(F("CHECK TEMP"));
       display.display();
     }
     break;
@@ -1095,22 +1134,51 @@ void loop()
     {
       if (hasSystemStateChanged())
       {
-        SystemTimeTarget = millis() + TEMP_CONVERSION_TIME; //time for temp conversion
+        setSystemTimeTarget(millis() + TEMP_CONVERSION_TIME); //time for temp conversion
         turnStartStopLedOff();
       }
       updateSystemState(g_SystemState);
 
       cooling_timer = COOLDOWN_PERIOD + millis(); //keep resetting fan timer while in cooldown mode
       display.clearDisplay();
+      display.setTextSize(2);
       display.setCursor(0, 0);
-      display.println(F("COOLDOWN: "));
+      display.println(F("COOLDOWN"));
+      display.setCursor(0, 16);
       display.print(temperature, 1);
       display.print((char PROGMEM)248);
       display.print(F("C"));
+      display.setTextSize(1);
+      if(g_RunSafety.cooldownRestartPending)
+      {
+        display.setCursor(86, 24);
+        display.print(F("AUTO ON"));
+      }
+      else
+      {
+        display.setCursor(80, 24);
+        display.print(F("AUTO OFF"));
+      }
       display.display();
       if(temperature < (TEMP_LIMIT - TEMP_HYSTERESIS)) //has it cooled enough to resume?
       {
-        updateSystemState(STATE_STOPPED);
+        if(g_RunSafety.cooldownRestartPending)
+        {
+          g_RunSafety.cooldownRestartPending = false;
+          if(CurrentMode == MODE_AUTOMATIC)
+          {
+            updateSystemState(STATE_ANNEALING);
+          }
+          else
+          {
+            updateSystemState(STATE_RELOADING);
+          }
+        }
+        else
+        {
+          Next_Cycle_Is_STOPPED = 0;
+          updateSystemState(STATE_STOPPED);
+        }
       }
 
     }
@@ -1118,14 +1186,14 @@ void loop()
     case STATE_JUST_BOOTED:
     {
       //temperature = sensors.getTempCByIndex(0);
-      if(temperature> TEMP_LIMIT)
+      if(temperature > TEMP_LIMIT)
       {
-        updateSystemState(STATE_COOLDOWN);
+        enterCooldown(false, false);
       }
       else
       {
         updateSystemState(STATE_STOPPED);
-        SystemTimeTarget = millis() + TEMP_CONVERSION_TIME; //time for temp conversion
+        setSystemTimeTarget(millis() + TEMP_CONVERSION_TIME); //time for temp conversion
       }
     }
     break;
@@ -1139,7 +1207,13 @@ void loop()
   modeKeyPrev = modeKey;
   upKeyPrev = upKey;
 
-  if(cooling_timer > millis())
+  if(g_SystemState == STATE_TEMPERATURE_SENSOR_WARNING)
+  {
+    // Keep cooling until a valid temperature reading is acknowledged.
+    turnCoolingFanOn();
+    FanIsOn=true;
+  }
+  else if(!hasTimeElapsed(cooling_timer, millis()))
   {
     turnCoolingFanOn();
     FanIsOn=true;
