@@ -739,12 +739,16 @@ void loop()
 
   // Leaving the cooldown screen must not make a new run possible until the
   // original hysteresis threshold has been reached.
-  if(g_RunSafety.cooldownLockActive && temperature < (TEMP_LIMIT - TEMP_HYSTERESIS))
+  if(NumberDallasTempDevices != 0 &&
+     isTemperatureReadingValid(temperature) &&
+     g_RunSafety.cooldownLockActive &&
+     temperature < (TEMP_LIMIT - TEMP_HYSTERESIS))
   {
     g_RunSafety.cooldownLockActive = false;
   }
 
-  if(!isTemperatureReadingValid(temperature) &&
+  if(NumberDallasTempDevices != 0 &&
+     !isTemperatureReadingValid(temperature) &&
      g_SystemState != STATE_TEMPERATURE_SENSOR_WARNING)
   {
     // An invalid temperature means the capacitor temperature is unknown.
@@ -768,7 +772,7 @@ void loop()
       {
         // The user may browse menus while cooling, but cannot start a run yet.
       }
-      else if(temperature > TEMP_LIMIT)
+      else if(NumberDallasTempDevices != 0 && temperature > TEMP_LIMIT)
       {
         enterCooldown(false, false);
       }
@@ -1214,17 +1218,20 @@ void loop()
         display.setTextSize(2);
         display.setCursor(0, 0);
         display.println(F("DROPPING"));
-        display.setCursor(0, 16);
-        display.print(temperature, 1);
-        display.print((char PROGMEM)248);
-        display.print(F("C"));
+        if(NumberDallasTempDevices != 0)
+        {
+          display.setCursor(0, 16);
+          display.print(temperature, 1);
+          display.print((char PROGMEM)248);
+          display.print(F("C"));
+        }
         display.display();
         break;
       }
       closeDropGate();
       CasesAnnealed++;
 
-      if(temperature > TEMP_LIMIT)
+      if(NumberDallasTempDevices != 0 && temperature > TEMP_LIMIT)
       {
         enterCooldown(true, Next_Cycle_Is_STOPPED);
         if(CurrentMode == MODE_AUTOMATIC)
@@ -1426,7 +1433,9 @@ void loop()
         display.print(F("AUTO OFF"));
       }
       display.display();
-      if(temperature < (TEMP_LIMIT - TEMP_HYSTERESIS)) //has it cooled enough to resume?
+      if(NumberDallasTempDevices != 0 &&
+         isTemperatureReadingValid(temperature) &&
+         temperature < (TEMP_LIMIT - TEMP_HYSTERESIS)) //has it cooled enough to resume?
       {
         if(g_RunSafety.cooldownRestartPending)
         {
@@ -1452,7 +1461,7 @@ void loop()
     case STATE_JUST_BOOTED:
     {
       //temperature = sensors.getTempCByIndex(0);
-      if(temperature > TEMP_LIMIT)
+      if(NumberDallasTempDevices != 0 && temperature > TEMP_LIMIT)
       {
         enterCooldown(false, false);
       }
