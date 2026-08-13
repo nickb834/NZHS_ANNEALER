@@ -1,218 +1,195 @@
-# NZHS_ANNEALER
-Arduino Uno source code for NZHS Annealer Shield
+# NZHS Annealer
 
-Annealer build and use guide
-http://www.mgnz-makes.com/
+This is a fork of [MJGNZ/NZHS_ANNEALER](https://github.com/MJGNZ/NZHS_ANNEALER).
 
-## Version 4.0.0 operation and safety
+Arduino Uno firmware for the NZHS Annealer Shield. For the annealer build and
+hardware guide, see [MGNZ Makes](http://www.mgnz-makes.com/).
 
-Version 4.0.0 changes the stopped-screen controls. Test the firmware with the
-machine attended before relying on any automatic operation.
+This branch is firmware version **4.0.0**. Test changes with the machine
+attended before relying on automatic operation. Menu changes can be safely
+tested with the included [SimulIDE simulation](simulide/).
 
-### Stopped-screen controls
+## Controls
 
-The left side of the OLED continues to show the anneal time. The normal
-right-hand list remains `FAN`, operating mode, case count, and temperature.
-MODE moves a visible selection through TIME, mode, `SETTINGS >`, `PROFILES >`,
-`INFO >`, and `DIAGNOSTICS>`; the list scrolls upward to reveal each menu
-item. The top-right row always shows `FAN ON` or `FAN OFF` in the normal view.
+| Button | Normal stopped screen | Menus |
+| --- | --- | --- |
+| START | Start the selected run mode |
+| MODE | Move through TIME, MODE, SETTINGS, PROFILES, INFO, and DIAGNOSTICS | Move the selection or scroll information |
+| UP | Change the selected time/mode, or open the selected item | Change, confirm, or enter the selected item |
 
-| Button | Stopped-screen action |
-| --- | --- |
-| MODE | Select the next item: `TIME`, `MODE`, `SETTINGS >`, `PROFILES >`, `INFO >`, or `DIAGNOSTICS>` |
-| UP | Change TIME or MODE, or enter the selected menu |
-| START | Start the selected operating mode |
+The OLED screen retains its original layout: anneal time on the left;
+fan state, operating mode, case count, and temperature on the right.
 
-When TIME is selected, UP normally advances by 0.1 seconds. After five
-consecutive presses no more than one second apart, it advances by 0.5 seconds;
-pause briefly to return to 0.1-second adjustment. Holding UP still resets TIME
-to 2.0 seconds.
+Press MODE to move through the home-screen selections shown below; press UP to
+open the highlighted menu.
 
-`RESTART` is a user-selected setting and is honoured at boot, before the first
-anneal-cycle current measurement.
+| TIME | MODE | SETTINGS |
+| --- | --- | --- |
+| ![TIME selected](docs/screenshots/home-time.png) | ![MODE selected](docs/screenshots/home-mode.png) | ![SETTINGS selected](docs/screenshots/home-settings.png) |
 
-| Selected item | UP action |
-| --- | --- |
-| TIME | Add 0.1 seconds; wrap from 8.0 s to 2.0 s |
-| MODE | Cycle single-shot, free-run, and auto-feed |
-| SETTINGS > | Open the Restart/Dump settings screen |
-| PROFILES > | Open the cartridge-profile selector |
-| INFO > | Open the low-current guard and learned-baseline screen |
-| DIAGNOSTICS> | Open the sensor and reset-diagnostics screen |
+| PROFILES | INFO | DIAGNOSTICS |
+| --- | --- | --- |
+| ![PROFILES selected](docs/screenshots/home-profiles.png) | ![INFO selected](docs/screenshots/home-info.png) | ![DIAGNOSTICS selected](docs/screenshots/home-diagnostics.png) |
 
-Within **Settings**, MODE selects `RESTART`, `DUMP`, or `BACK >`; UP toggles
-the selected setting or returns at `BACK >`. Diagnostics displays a visible
-highlighted `BACK >`; UP returns to the stopped screen. Info keeps `BACK >`
-visible while MODE scrolls its detail rows; UP returns to the stopped screen.
-START does not leave menus. Every `BACK >` returns to the home-list item that
-opened it, while `LOAD >` deliberately returns to `TIME`, ready to run.
+`DIAGNOSTICS >` then shows its sensor and reset information:
 
-On the first startup, press START once to display the existing case-height and
-time warning, press it again to acknowledge the warning, then press START a
-third time to begin the first anneal cycle.
+![Diagnostics menu](docs/screenshots/diagnostics-menu.png)
 
-### Operating modes and dump button
+### Time adjustment
 
-- **Single-shot:** anneal and drop one case, then stop.
-- **Free-run:** anneal and drop a case, then show the five-second `LOAD`
-  countdown for manual loading before the next cycle.
-- **Auto-feed:** use the stepper feeder to run continuously.
+With TIME selected, UP normally adds 0.1 seconds and wraps from 8.0 to 2.0
+seconds. After five UP presses no more than one second apart, it adds 0.5
+seconds instead. Pause for more than one second to return to 0.1-second steps.
+Holding UP resets the time to 2.0 seconds.
 
-`DUMP: ON` selects free-run and disables the feeder. It also forces `RESTART`
-off, because manual case handling must not resume unattended after cooldown.
-Conversely, enabling `RESTART` turns `DUMP` off. While an active free-run cycle
-is in progress, hold MODE to open the drop gate and release it to close the
-gate. Changing to another operating mode turns `DUMP` off.
+## Running cases
 
-During annealing, the OLED retains its original full-size current and remaining
-time layout. During the dropping interval, it shows a full-size `DROPPING`
-message and the live temperature in the lower row.
+Select a mode, then press START.
 
-### Cartridge profiles
+- **Single-shot** anneals and drops one case, then stops.
+- **Free-run** anneals and drops a case, shows a five-second `LOAD` countdown,
+  then starts the next cycle. Load each case manually.
+- **Auto-feed** operates the stepper feeder between cycles.
 
-`PROFILES >` stores up to eight named cartridge profiles in EEPROM. A profile
-contains anneal time, operating mode, automatic-restart preference, and the
-dump-button preference. The learned current baseline is deliberately not
-saved: it is specific to the brass being processed and is rebuilt for each
+A current sensor is strongly recommended for free-run and auto-feed, and is
+required for the firmware's under-current and over-current safety features.
+Do not use unattended automatic operation without one.
+
+On first use after power-up, START first displays the existing case-height/time
+warning. Press START again to acknowledge it, then START once more to begin a
 run.
 
-All profile slots are blank on first use, but the selector labels them `PROFILE 1` through `PROFILE 8` until they are
-renamed. MODE selects profile slots 1–8 or `BACK >`; UP opens the selected slot. In the
-profile action menu, MODE selects `LOAD`, `SAVE`, `RENAME`, `DELETE`, or
-`BACK >`; UP performs the highlighted action. Saving an empty slot creates
-`PROFILE 1`–`PROFILE 8` and opens the name editor. In the editor, UP cycles the
-selected character through `A-Z`, `0-9`, `-`, `.`, and space; MODE moves the
-cursor through every character and then the visible `SAVE >` item; UP at
-`SAVE >` saves and briefly shows `SAVED`. Saving an existing profile also
-briefly shows `SAVED`. One more MODE press selects `BACK >`; UP there discards name
-changes. While a name character is selected, holding UP for one second starts
-automatic character cycling; a normal UP press still
-advances only one character. Delete confirmation has visible `DELETE >` and `BACK >` items; MODE
-selects either and UP performs the selected action. START does not leave menus:
-every menu exits through its visible `BACK >` item and UP.
+## Settings
 
-Loading a profile applies all settings together and also updates the normal
-saved settings. If `DUMP` is saved on, loading preserves the existing safety
-rule: dump mode forces free-run and keeps the feeder disabled.
+Open `SETTINGS >` with UP. MODE selects `RESTART`, `DUMP`, or `BACK >`; UP
+changes the selected item.
 
-When cooldown begins, START cancels a pending automatic restart and returns to
-the normal home/menu UI. Settings, profiles, information, and diagnostics
-remain available while cooling. The temperature is suffixed with `COOL!`, and
-START cannot begin another run until it drops below the 40 °C hysteresis
-threshold.
+- **RESTART** resumes free-run or auto-feed after a cooldown. It is saved in
+  EEPROM.
+- **DUMP** forces free-run and disables the feeder. In DUMP mode you can hold
+  MODE to open the drop gate and release it to close the drop gate.
 
-### SimulIDE harness
+RESTART and DUMP are mutually exclusive: enabling one turns the other off.
+Changing operating mode also turns DUMP off.
 
-The repository includes [`simulide/nzhs-annealer.sim1`](simulide/nzhs-annealer.sim1), a
-software-only Uno harness for exercising the OLED UI, buttons, profile
-persistence, temperature input, and logical output transitions. It has been
-laid out and tested with **SimulIDE 1.1.0 SR2** on macOS. Download SimulIDE 1
-from the [official downloads page](https://simulide.com/p/downloads/); version
-1 is the project's stable release. The harness always loads the tracked normal
-Uno HEX, not a simulator-specific firmware build. It does not replace hardware
-safety testing; see [the harness instructions](simulide/README.md) for setup,
-controls, and limits.
+The gate still opens automatically at the end of every anneal cycle. DUMP adds
+a manual gate override; it does not remove the normal drop sequence.
+
+## Cooldown and faults
+
+With a temperature sensor fitted, cooldown begins above 55 C and a run may
+resume below 40 C.
+
+- With RESTART enabled, free-run and auto-feed resume automatically after
+  cooldown. Single-shot does not.
+- START during cooldown cancels the pending restart and returns to the stopped
+  screen. `COOL!` remains beside the temperature and prevents another run until
+  the temperature is below 40 C.
+- If a sensor detected at boot later returns an invalid reading, annealing stops,
+  the fan stays on, and `TEMP ERROR` is displayed. Restore a valid reading and
+  press MODE to clear it.
+- If no temperature sensor is detected at boot, operation follows upstream
+  v3.8.0 behaviour: temperature display, cooldown, and thermal protection are
+  unavailable.
+- With a current sensor detected, the low-current safety check ignores the
+  first anneal cycle. From the second cycle, an average current at or below
+  0.1 A indicates no usable annealing current: it stops before the gate opens
+  and displays `CHECK CASE` / `CURRENT LO!`.
+- After one ignored cycle and five normal cycles, the firmware also stops when
+  a cycle falls below 85% of the learned moving current baseline.
+
+The current checks help detect an empty coil or missing cases. They cannot
+detect every mechanical jam.
+
+## Cartridge profiles
+
+`PROFILES >` stores up to eight named profiles in EEPROM. Each profile saves:
+
+- Anneal time
+- Operating mode
+- RESTART setting
+- DUMP setting
+
+MODE selects a profile or action; UP opens or confirms it. Empty slots are
+shown as `PROFILE 1` through `PROFILE 8`. A profile name has ten characters;
+hold UP for one second while editing the profile name to cycle characters
+automatically. Loading a profile applies its settings immediately. The learned
+current baseline is per-run and is not saved in a profile.
+
+## Information and diagnostics
+
+`INFO >` shows the current-safety threshold (85% of the learned baseline for
+current during annealing), the learned baseline current from the last normal
+cases, the estimated Uno 5V rail, and the firmware version. MODE scrolls
+through these values; UP returns to the stopped screen.
+
+`DIAGNOSTICS >` shows temperature-sensor/current-sensor status and `RST:c|s`,
+a best-effort reset record: `c` is the reset cause and `s` is the state
+recorded before the reset. UP returns to the stopped screen.
+
+| Record | Values |
+| --- | --- |
+| `c` cause | `W` watchdog; `B` brown-out; `E` external reset; `P` power-on; `-` unavailable |
+| `s` state | `A` annealing; `D` dropping; `R` reloading; `C` cooldown; `S` stopped; `?` unknown |
+
+The record is best-effort because the Uno bootloader can clear the reset cause
+before the firmware reads it.
+
+## Build and upload
+
+### Arduino IDE
+
+1. Install the current [Arduino IDE](https://www.arduino.cc/en/software).
+2. In **Library Manager**, install:
+   - `Adafruit SSD1306`
+   - `Adafruit GFX Library`
+   - `OneWire`
+   - `DallasTemperature`
+3. Open [`NZHS_ANNEALER_128x32_OLED.ino`](NZHS_ANNEALER_128x32_OLED/NZHS_ANNEALER_128x32_OLED.ino).
+4. Select **Tools → Board → Arduino AVR Boards → Arduino Uno**.
+5. Select the Uno's serial port under **Tools → Port**, then use **Verify** or
+   **Upload**.
+
+Only flash the firmware while the unit is idle, not annealing or in cooldown.
+
+### Arduino CLI
+
+From the repository root:
+
+```sh
+arduino-cli compile --fqbn arduino:avr:uno --export-binaries NZHS_ANNEALER_128x32_OLED
+```
+
+The tracked release artifacts are:
+
+- `NZHS_ANNEALER_128x32_OLED.ino.standard.hex` — standard Uno image
+- `NZHS_ANNEALER_128x32_OLED.ino.with_bootloader.standard.hex` — image that
+  includes the bootloader
+
+When firmware source changes, rebuild both artifacts from the exact commit
+before distributing or pushing them.
+
+## Simulator
+
+The [`simulide/`](simulide/) harness uses SimulIDE 1.1.0 SR2 on macOS (as
+tested, but should work on Windows/Linux) and loads the normal production HEX;
+it is not a simulator-specific firmware build.
+See [simulide/README.md](simulide/README.md) for setup and limits.
 
 ![SimulIDE Uno harness](simulide/nzhs-annealer-simulide.png)
 
-### Diagnostics and information
+## Testing and development notes
 
-The diagnostics screen retains the normal left-side time panel and divider.
-Its right-side rows show the temperature-sensor count/current status,
-`RST:<cause>|<state>` best-effort reset record, and `BACK >`. The separate
-Info screen shows `LOW: 85% N5`, the configured 85% threshold and five-case
-baseline window, plus the learned `BASE` current in amps. MODE scrolls
-upward through the estimated regulated `5V` rail and firmware version while
-keeping `BACK >` visible. The `5V` value is derived from the Uno's nominal
-1.1 V internal band-gap and is best used for trend monitoring unless
-calibrated. `BASE: --` is shown until five accepted cases establish the
-baseline. Reset causes are
-`W` watchdog, `B` brown-out, `E` external reset, and `P` power-on; the Uno
-bootloader may clear the cause before the firmware reads it. The final state is
-`A` annealing, `D` dropping, `R` reloading, `C` cooldown, or `S` stopped. With
-`DEBUG` enabled, the full reset flags
-and previous state are also printed to serial at 115200 baud during boot.
+The detailed release/hardware validation checklist is in
+[docs/TESTING.md](docs/TESTING.md).
 
-### Automatic cooldown restart
-
-Automatic restart is stored across power cycles and is honoured before the
-first current measurement. Cooldown starts above 55 C and ends below 40 C.
-
-- Free-run returns to its normal `LOAD` countdown after cooldown.
-- Auto-feed resumes its automatic sequence after cooldown.
-- Single-shot does not automatically restart.
-- START during cooldown cancels a pending automatic restart.
-- An invalid or missing temperature reading immediately stops annealing,
-  cancels a pending restart, keeps the cooling fan on, and shows the
-  `TEMP ERROR` / `CHECK TEMP` fault. A valid reading and MODE acknowledgement
-  are required before another run; the saved `RESTART` preference is retained.
-- START from stopped enters cooldown rather than annealing if a valid reading
-  is still above 55 C.
-
-### Low-current guard
-
-The existing A0 mid-rail check continues to detect current-sensor presence for
-the display and over-current protection. The first anneal cycle is a deliberate
-current-sensing leap of faith; from the second cycle onward, every average must
-exceed 0.1 A. A cycle at or below that floor stops before opening the gate,
-displays the low-current fault, and clears the saved `RESTART` preference. The
-cooldown screen always shows `AUTO ON` when a restart is pending, otherwise
-`AUTO OFF`.
-
-After verification, the first anneal cycle of each run is ignored. The next
-five accepted anneal-cycle averages establish a moving normal-current window.
-After that, the first cycle average below 85% of that window's average stops
-the machine before that suspected case is dropped and displays `CHECK CASE` /
-`CURRENT LO!`. Suspected low-current cycles are not added to the window, so an
-empty run cannot progressively lower the reference value.
-
-This guard helps detect an empty coil or an out-of-cases condition. It cannot
-detect every mechanical jam: a case that remains in the coil may still draw a
-normal current. A MODE press acknowledges the fault and returns to stopped;
-starting a new run resets the learned baseline.
-
-### Hardware validation checklist
-
-Before unattended use or publication of a release:
-
-- Compile for the Arduino Uno with the required Adafruit, DallasTemperature,
-  and OneWire libraries; record the compiler's program-storage and dynamic-RAM
-  report.
-- Verify stopped-screen navigation: TIME → MODE → SETTINGS → PROFILES → INFO →
-  DIAGNOSTICS → TIME. At each menu item, press UP and confirm the intended
-  submenu opens; confirm Settings `BACK >`, Diagnostics `BACK >`, and Info
-  UP/START each return to the normal stopped screen.
-- In Info, press MODE through all three rows and confirm `LOW`, `BASE`, `5V`,
-  and firmware version appear in order while `BACK >` remains visible. Confirm
-  the 5 V value refreshes no more frequently than once per second.
-- Verify the first no-current cycle completes as the intentional sensing leap
-  of faith, then confirm the second cycle at or below 0.1 A stops before
-  dropping, shows the low-current fault, and `RESTART` remains OFF after
-  reboot; the other current-sensor displays and protections retain their
-  existing A0 detection behaviour.
-- Verify restart preference persistence with a current sensor fitted.
-- Exercise free-run, auto-feed, dump OFF, and dump ON behavior.
-- Save, rename, load, and delete a profile. Confirm loaded time, mode,
-  restart, and dump settings survive a power cycle; confirm a dump-enabled
-  profile loads in free-run with the feeder disabled.
-- Verify cooldown entry above 55 C, restart only below 40 C, and START cancellation.
-- Disconnect the temperature sensor while stopped and while annealing: verify
-  `TEMP ERROR` / `CHECK TEMP`, annealer-off behavior, fan operation, and that
-  a valid reading plus MODE acknowledgement is required to continue.
-- With a valid temperature above 55 C, press START from stopped and confirm
-  that the firmware enters cooldown rather than annealing.
-- Confirm one ignored cycle followed by five known-good cycles establishes a
-  representative current baseline, then validate the low-current fault using a
-  safe test method.
-- Generate and test fresh `.hex` firmware artifacts before distributing them.
+## Version history
 
 SW version 4.0.0
-- Added a scrolling stopped-screen menu: TIME and operating mode retain their original direct adjustment, while Restart/Dump, Diagnostics, and Info are opened through visible menu entries
-- Automatic restart is saved across power cycles and resumes free-run or auto-feed after the existing cooldown threshold is reached; START cancels a pending restart during cooldown
-- Automatic restart is honoured before the first anneal-cycle current measurement, then any saved restart preference is cleared when no current is detected
-- Uses the existing A0 current-sensor detection for current monitoring; independently clears automatic restart after an anneal-cycle average at or below 0.1 A, then stops before the first cycle below 85% of the accepted five-cycle moving baseline is dropped
-- Added a persisted dump-button setting: enabling it selects free-run, and MODE opens the drop gate while active in free-run
-- Added a visible firmware and sensor diagnostics screen
+
+- Added home screen menus for settings, profiles, diagnostics, and info.
+- Manual Dump and Cooldown auto restart are configurable directly in Settings.
+- Added a low-current safety stop.
 
 SW version 3.8.0
 - Fixed bug relating to case feeder home position drift
