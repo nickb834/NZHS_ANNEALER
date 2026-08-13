@@ -200,6 +200,7 @@ typedef struct tRunSafetyState
   uint16_t annealingCurrentSamples;
   uint32_t restartCurrentTotal_ma;
   uint16_t restartCurrentSamples;
+  uint8_t completedAnnealCycles;
   uint16_t baselineCurrent_ma;
   uint16_t baselineCurrentWindow_ma[LOW_CURRENT_BASELINE_CYCLES];
   uint8_t ignoredCurrentCycles;
@@ -1112,11 +1113,11 @@ void loop()
       }
       updateSystemState(g_SystemState);
 
-      psuCurrent_ma = readPsuCurrent_ma();
-      g_RunSafety.restartCurrentTotal_ma += psuCurrent_ma;
-      g_RunSafety.restartCurrentSamples++;
       if(CurrentSensorPresent)
       {
+        psuCurrent_ma = readPsuCurrent_ma();
+        g_RunSafety.restartCurrentTotal_ma += psuCurrent_ma;
+        g_RunSafety.restartCurrentSamples++;
         if(psuCurrent_ma >= PSU_OVERCURRENT) //overloaded the PSU - may damage the ZVS converter
         {
           turnAnnealerOff();
@@ -1133,17 +1134,17 @@ void loop()
       if (hasTimeElapsed(systemTimeTarget, currentTime))
       {
         turnAnnealerOff();
-        if(g_RunSafety.restartCurrentSamples)
+        if(CurrentSensorPresent && g_RunSafety.restartCurrentSamples)
         {
           uint16_t restartCycleAverageCurrent_ma = g_RunSafety.restartCurrentTotal_ma / g_RunSafety.restartCurrentSamples;
-          if(g_RunSafety.ignoredCurrentCycles >= LOW_CURRENT_IGNORED_CYCLES &&
+          if(g_RunSafety.completedAnnealCycles >= LOW_CURRENT_IGNORED_CYCLES &&
              restartCycleAverageCurrent_ma <= CURRENT_SENSOR_DETECTION_MA)
           {
             // The first case is a deliberate leap of faith while the system
             // settles. After it, a cycle below 0.1 A means no usable annealing
             // current: stop before opening the gate and prevent a future
-            // unattended cooldown restart. This is independent of the legacy
-            // A0 mid-rail sensor-presence flag.
+            // unattended cooldown restart. This check is only meaningful
+            // when setup detected a sensor at A0.
             g_UserSettings.autoRestartAfterCooldown = false;
             EEPROM.update(EEPROM_ADDRESS_AUTO_RESTART, 0);
             g_RunSafety.cooldownRestartPending = false;
@@ -1163,6 +1164,7 @@ void loop()
             break;
           }
         }
+        g_RunSafety.completedAnnealCycles++;
         openDropGate();
         updateSystemState(STATE_DROPPING);
         // Do not render the annealing countdown after expiry.
@@ -1573,6 +1575,7 @@ static void resetRunSafetyState(void)
   g_RunSafety.annealingCurrentSamples = 0;
   g_RunSafety.restartCurrentTotal_ma = 0;
   g_RunSafety.restartCurrentSamples = 0;
+  g_RunSafety.completedAnnealCycles = 0;
   g_RunSafety.baselineCurrent_ma = 0;
   g_RunSafety.ignoredCurrentCycles = 0;
   g_RunSafety.baselineCurrentCycles = 0;
