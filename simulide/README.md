@@ -17,6 +17,7 @@ path: it is deliberately not a simulator-specific firmware build.
 | `UP` push button | A2 | Enter, toggle, edit, or confirm the selected item |
 | `CURRENT 0-12.5A A0` potentiometer | A0 | Simulated current-sensor signal; full travel represents approximately 12.5 A from its boot-time centre position |
 | `CASE TEMP (D8)` DS18B20 | D8 | Use its `+` / `-` controls to change simulated temperature; the harness includes its required 4.7 kΩ one-wire pull-up to 5 V |
+| `ANALYSIS SERIAL (115200)` terminal | D1 (TX) | Open the terminal to inspect `Serial.print` analysis output from the production firmware |
 | OLED | A4 (SDA), A5 (SCL) | Inspect all rendered UI states |
 | `ANNEAL D6`, `FAN D7`, `GATE D10` LEDs | matching Uno outputs | Observe logical output changes |
 | `FEED EN D5`, `FEED DIR D13`, `FEED STEP D12` LEDs | matching Uno outputs | Observe the three STEP/DIR/ENABLE signals sent to the external feeder driver |
@@ -38,6 +39,9 @@ button grounds its input.
 2. Open `simulide/nzhs-annealer.sim1` in SimulIDE 1.1.0 SR2 and start the
    circuit. The `CASE TEMP (D8)` DS18B20 starts at 50 °C; its visible `+` /
    `-` controls change the simulated temperature by 1 °C per press.
+   Open `ANALYSIS SERIAL (115200)` to view firmware serial output; it is
+   connected to the Uno's D1/TX UART output, equivalent to viewing that data
+   through the physical Uno's USB serial port.
 3. Keep `CURRENT 0-12.5A A0` centred during boot. The firmware measures that
    position as its ACS712 zero-current offset. A 10 kΩ series resistor narrows
    the simulation input to approximately 12.5 A across either half of the

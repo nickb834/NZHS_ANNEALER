@@ -35,8 +35,9 @@
 #define TEMP_LIMIT 55 //capacitor temperature limit degC
 #define TEMP_CONVERSION_TIME 120 //measurement time for DS18B20 9,10,11,12 bit = 95ms, 190ms, 375ms, 750ms
 #define TEMP_HYSTERESIS 15 //define how much temperature needs to drop to resume
-#define TEMP_SENSOR_MIN_C -55.0f //DS18B20 lower measurement limit
-#define TEMP_SENSOR_MAX_C 125.0f //DS18B20 upper measurement limit
+#define TEMP_RAW_SCALE 128 //DallasTemperature raw readings are in 1/128 degC units
+#define TEMP_SENSOR_MIN_RAW (-55 * TEMP_RAW_SCALE) //DS18B20 lower measurement limit
+#define TEMP_SENSOR_MAX_RAW (125 * TEMP_RAW_SCALE) //DS18B20 upper measurement limit
 #define DROP_TIME 500 //time to drop the case in ms
 #define RELOAD_TIME 5000 //time for user to load a new case in free run mode (ms)
 #define RELOAD_TIME_AUTO__FEED 2000 //time to feed case in auto feed mode (ms) - recommend leaving at 2000
@@ -48,6 +49,15 @@
 #define RAPID_TIME_INCREMENT 500 //milliseconds added by rapid time adjustment
 #define PROFILE_NAME_REPEAT_DELAY 1000 //hold UP for this long before profile-name characters begin repeating
 #define PROFILE_NAME_REPEAT_PERIOD 150 //milliseconds between repeated profile-name characters
+#define ANALYSIS_DURATION_MS 8000UL
+#define ANALYSIS_SAMPLE_PERIOD_MS 25UL
+#define ANALYSIS_GRAPH_COLUMNS 128
+#define ANALYSIS_GRAPH_REFRESH_MS 100UL
+#define ANALYSIS_GATE_OPEN_PERIOD_MS 5000UL
+#define ANALYSIS_DUMP_STATUS_MS 1000UL
+#define ANALYSIS_ABORT_HOLD_MS 300UL
+#define ANALYSIS_SUPPLY_VOLTAGE_V 48UL
+#define ANALYSIS_GRAPH_MAX_CURRENT_MA 12500UL
 #define LOW_CURRENT_IGNORED_CYCLES 1 //first anneal cycle is ignored while the system settles
 #define LOW_CURRENT_BASELINE_CYCLES 5 //accepted normal cycles retained in the moving baseline window
 #define LOW_CURRENT_CONSECUTIVE_CYCLES 1 //low-current cycles that trigger a fault
@@ -90,8 +100,92 @@
 #define PROFILE_FLAG_DUMP_BUTTON 0x02
 #define PROFILE_SAVE_NOTICE_PERIOD 1000
 #define RIGHT_PANEL_X 56
+#define ANALYSIS_ENERGY_X 92
 
-Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, -1, 200000, 200000);
+#ifndef FPSTR
+#define FPSTR(address) (reinterpret_cast<const __FlashStringHelper *>(address))
+#endif
+
+// Reuse common labels rather than emitting a separate flash string at every
+// display call site.
+static const char TEXT_ANALYSE_ITEM[] PROGMEM = "ANALYSE >";
+static const char TEXT_SETTINGS_ITEM[] PROGMEM = "SETTINGS >";
+static const char TEXT_PROFILES[] PROGMEM = "PROFILES";
+static const char TEXT_PROFILES_ITEM[] PROGMEM = "PROFILES >";
+static const char TEXT_INFO_ITEM[] PROGMEM = "INFO >";
+static const char TEXT_BACK_ITEM[] PROGMEM = "BACK >";
+static const char TEXT_SAVE_ITEM[] PROGMEM = "SAVE >";
+static const char TEXT_LOAD_ITEM[] PROGMEM = "LOAD >";
+static const char TEXT_RENAME_ITEM[] PROGMEM = "RENAME >";
+static const char TEXT_DELETE_ITEM[] PROGMEM = "DELETE >";
+static const char TEXT_NEW_ITEM[] PROGMEM = "NEW >";
+static const char TEXT_REVIEW_ITEM[] PROGMEM = "REVIEW >";
+static const char TEXT_ON[] PROGMEM = "ON";
+static const char TEXT_OFF[] PROGMEM = "OFF";
+static const char TEXT_INPUT_ENERGY[] PROGMEM = ",input_energy_J=";
+static const char * const PROFILE_ACTION_TEXT[] PROGMEM = {
+  TEXT_LOAD_ITEM, TEXT_SAVE_ITEM, TEXT_RENAME_ITEM, TEXT_DELETE_ITEM, TEXT_BACK_ITEM
+};
+
+// The annealer only supports a 128x32 I2C panel. Keeping its framebuffer in
+// the object avoids a hidden 512-byte heap allocation, while the fixed init
+// sequence omits unused SPI/multi-panel code and the unseen Adafruit splash.
+class AnnealerDisplay : public Adafruit_SSD1306
+{
+public:
+  AnnealerDisplay(uint8_t width, uint8_t height, TwoWire *twi, int8_t resetPin,
+                  uint32_t activeClock, uint32_t idleClock)
+    : Adafruit_SSD1306(width, height, twi, resetPin, activeClock, idleClock) {}
+
+  // Prevent the base destructor from trying to free the statically owned
+  // framebuffer if program shutdown is ever reached.
+  ~AnnealerDisplay() { buffer = NULL; }
+
+  bool beginFixed128x32I2C(void)
+  {
+    if(!buffer)
+    {
+      buffer = framebuffer;
+    }
+
+    clearDisplay();
+    vccstate = SSD1306_SWITCHCAPVCC;
+    i2caddr = DISPLAY_ADDRESS;
+    contrast = 0x8F;
+    wire->begin();
+#ifdef WIRE_HAS_TIMEOUT
+    wire->setWireTimeout(25000, true);
+#endif
+    wire->setClock(wireClk);
+    static const uint8_t PROGMEM commands[] = {
+      SSD1306_DISPLAYOFF,
+      SSD1306_SETDISPLAYCLOCKDIV, 0x80,
+      SSD1306_SETMULTIPLEX, SCREEN_HEIGHT - 1,
+      SSD1306_SETDISPLAYOFFSET, 0,
+      SSD1306_SETSTARTLINE,
+      SSD1306_CHARGEPUMP, 0x14,
+      SSD1306_MEMORYMODE, 0,
+      SSD1306_SEGREMAP | 1,
+      SSD1306_COMSCANDEC,
+      SSD1306_SETCOMPINS, 0x02,
+      SSD1306_SETCONTRAST, 0x8F,
+      SSD1306_SETPRECHARGE, 0xF1,
+      SSD1306_SETVCOMDETECT, 0x40,
+      SSD1306_DISPLAYALLON_RESUME,
+      SSD1306_NORMALDISPLAY,
+      SSD1306_DEACTIVATE_SCROLL,
+      SSD1306_DISPLAYON
+    };
+    ssd1306_commandList(commands, sizeof(commands));
+    wire->setClock(restoreClk);
+    return true;
+  }
+
+private:
+  uint8_t framebuffer[SCREEN_WIDTH * ((SCREEN_HEIGHT + 7) / 8)];
+};
+
+AnnealerDisplay display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, -1, 200000, 200000);
 // Setup a oneWire instance to communicate with any OneWire devices
 OneWire oneWire(ONE_WIRE_BUS);
 // Pass our oneWire reference to Dallas Temperature.
@@ -109,7 +203,7 @@ static volatile bool StepToggle = 0;
 static volatile uint32_t SystemTimeTarget;
 
 //--define state machine states-----------------------------------------------------------
-typedef enum tStateMachineStates
+typedef enum tStateMachineStates : uint8_t
 {
   STATE_STOPPED = 0,
   STATE_PRELOAD,
@@ -125,33 +219,39 @@ typedef enum tStateMachineStates
   STATE_PROFILE_NAME_EDIT,
   STATE_PROFILE_DELETE_CONFIRM,
   STATE_PROFILE_SAVED,
+  STATE_ANALYSIS_LOAD,
+  STATE_ANALYSING,
+  STATE_ANALYSIS_GATE_OPEN,
+  STATE_ANALYSIS_RESULT,
   STATE_DIAGNOSTICS,
   STATE_INFO,
   STATE_OVERCURRENT_WARNING,
   STATE_LOW_CURRENT_WARNING,
   STATE_TEMPERATURE_SENSOR_WARNING,
+  STATE_ANALYSIS_MENU,
   STATE_UNKNOWN,
 } tStateMachineStates;
 
-typedef enum ModeList
+typedef enum ModeList : uint8_t
 {
   MODE_SINGLE_SHOT = 0,
   MODE_FREE_RUN,
   MODE_AUTOMATIC,
 } ModeList;
 
-typedef enum tStoppedScreenSelection
+typedef enum tStoppedScreenSelection : uint8_t
 {
   STOPPED_SCREEN_TIME = 0,
   STOPPED_SCREEN_MODE,
   STOPPED_SCREEN_SETTINGS,
   STOPPED_SCREEN_PROFILES,
+  STOPPED_SCREEN_ANALYSE,
   STOPPED_SCREEN_INFO,
   STOPPED_SCREEN_DIAGNOSTICS,
   STOPPED_SCREEN_SELECTION_COUNT,
 } tStoppedScreenSelection;
 
-typedef enum tSettingsScreenSelection
+typedef enum tSettingsScreenSelection : uint8_t
 {
   SETTINGS_SCREEN_AUTO_RESTART = 0,
   SETTINGS_SCREEN_DUMP_BUTTON,
@@ -159,7 +259,15 @@ typedef enum tSettingsScreenSelection
   SETTINGS_SCREEN_SELECTION_COUNT,
 } tSettingsScreenSelection;
 
-typedef enum tProfileActionSelection
+typedef enum tAnalysisMenuSelection : uint8_t
+{
+  ANALYSIS_MENU_NEW = 0,
+  ANALYSIS_MENU_REVIEW,
+  ANALYSIS_MENU_BACK,
+  ANALYSIS_MENU_SELECTION_COUNT,
+} tAnalysisMenuSelection;
+
+typedef enum tProfileActionSelection : uint8_t
 {
   PROFILE_ACTION_LOAD = 0,
   PROFILE_ACTION_SAVE,
@@ -176,6 +284,7 @@ typedef struct tUserSettings
   bool dumpButtonEnabled;
   tStoppedScreenSelection stoppedScreenSelection;
   tSettingsScreenSelection settingsScreenSelection;
+  tAnalysisMenuSelection analysisMenuSelection;
   uint8_t profileSlot;
   tProfileActionSelection profileActionSelection;
   uint8_t profileNameCursor;
@@ -209,6 +318,24 @@ typedef struct tRunSafetyState
   uint8_t lowCurrentConsecutiveCycles;
 } tRunSafetyState;
 
+typedef struct tAnalysisState
+{
+  uint32_t startTime;
+  uint32_t nextSampleTime;
+  uint32_t lastSampleTime;
+  uint32_t lastGraphDrawTime;
+  uint32_t inputEnergy_mJ;
+  uint16_t peakCurrent_ma;
+  uint16_t elapsedTime_ms;
+  uint8_t graphColumn;
+  uint16_t graphCurrentTotal_ma;
+  uint16_t graphCurrent_ma;
+  uint8_t graphCurrentSamples;
+  uint8_t graphHeight;
+  uint8_t graphHeights[ANALYSIS_GRAPH_COLUMNS];
+  bool graphValid;
+} tAnalysisState;
+
 typedef struct tResetDiagnostics
 {
   uint8_t magic;
@@ -231,44 +358,44 @@ static const uint8_t g_DropSolenoidPin      = 10;
 static const uint8_t g_TimeSetButtonPin     = 16;
 static const uint8_t g_FeederDirPin         = 13;
 static const uint8_t g_FeederStepperEnPin   = 5;
+static tAnalysisState g_Analysis;
 
 
- // custom startup image, 128x32px
+// Custom startup image cropped to its non-blank 120x28 region. It is drawn at
+// (0,2), reconstructing the original 128x32 frame without storing blank rows.
 const unsigned char anneallogo [] PROGMEM = {
-0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x0E, 0x00,
-0x00, 0x00, 0x07, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0x9E, 0x00,
-0x00, 0x00, 0x0F, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFE, 0x00,
-0x00, 0x00, 0x3C, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xFE, 0x00,
-0x00, 0x00, 0x70, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xDE, 0x00,
-0x00, 0x00, 0xE0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xDE, 0x00,
-0x00, 0xFF, 0xC0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xDE, 0x00,
-0x01, 0xFF, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xDE, 0x00,
-0x01, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xDE, 0x00,
-0x01, 0x80, 0x00, 0x00, 0x00, 0x01, 0xC3, 0x3F, 0x30, 0xC7, 0x80, 0x00, 0x00, 0x00, 0xDE, 0x00,
-0x01, 0x80, 0x00, 0x00, 0x00, 0x01, 0xE3, 0x3F, 0x30, 0xCF, 0xC0, 0x00, 0x00, 0x00, 0xDE, 0x00,
-0x01, 0x80, 0x00, 0x00, 0x00, 0x01, 0xE3, 0x03, 0x30, 0xCC, 0x40, 0x00, 0x00, 0x00, 0xDE, 0x00,
-0x01, 0x80, 0x00, 0x00, 0x00, 0x01, 0xB3, 0x06, 0x30, 0xCC, 0x00, 0x00, 0x00, 0x00, 0xDE, 0x00,
-0x01, 0x80, 0x00, 0x00, 0x00, 0x01, 0xB3, 0x0C, 0x3F, 0xCF, 0x80, 0x00, 0x00, 0x00, 0xDE, 0x00,
-0x01, 0x80, 0x00, 0x00, 0x00, 0x01, 0x9B, 0x1C, 0x3F, 0xC3, 0xC0, 0x00, 0x00, 0x00, 0xDE, 0x00,
-0x01, 0x80, 0x00, 0x00, 0x00, 0x01, 0x8B, 0x18, 0x30, 0xC0, 0xC0, 0x00, 0x00, 0x00, 0xDE, 0x00,
-0x01, 0x80, 0x00, 0x00, 0x00, 0x01, 0x8F, 0x30, 0x30, 0xC8, 0xC0, 0x00, 0x00, 0x00, 0xDE, 0x00,
-0x01, 0x80, 0x00, 0x00, 0x00, 0x01, 0x87, 0x3F, 0x30, 0xCF, 0xC0, 0x00, 0x00, 0x00, 0xDE, 0x00,
-0x01, 0x80, 0x00, 0x00, 0x00, 0x01, 0x87, 0x3F, 0x30, 0xCF, 0x80, 0x00, 0x00, 0x00, 0xDE, 0x00,
-0x01, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xDE, 0x00,
-0x01, 0xFF, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xDE, 0x00,
-0x00, 0xFF, 0xC0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xDE, 0x00,
-0x00, 0x00, 0xE0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xDE, 0x00,
-0x00, 0x00, 0x70, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xDE, 0x00,
-0x00, 0x00, 0x3C, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xFE, 0x00,
-0x00, 0x00, 0x0F, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFE, 0x00,
-0x00, 0x00, 0x07, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0x9E, 0x00,
-0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x0E, 0x00,
-0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00
+0x00, 0x07, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0x9E, 0x00, 0x00,
+0x0F, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFE, 0x00, 0x00, 0x3C,
+0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xFE, 0x00, 0x00, 0x70, 0x00,
+0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xDE, 0x00, 0x00, 0xE0, 0x00, 0x00,
+0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xDE, 0x00, 0xFF, 0xC0, 0x00, 0x00, 0x00,
+0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xDE, 0x01, 0xFF, 0x00, 0x00, 0x00, 0x00, 0x00,
+0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xDE, 0x01, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xDE, 0x01, 0x80, 0x00, 0x00, 0x00, 0x01, 0xC3, 0x3F, 0x30,
+0xC7, 0x80, 0x00, 0x00, 0x00, 0xDE, 0x01, 0x80, 0x00, 0x00, 0x00, 0x01, 0xE3, 0x3F, 0x30, 0xCF,
+0xC0, 0x00, 0x00, 0x00, 0xDE, 0x01, 0x80, 0x00, 0x00, 0x00, 0x01, 0xE3, 0x03, 0x30, 0xCC, 0x40,
+0x00, 0x00, 0x00, 0xDE, 0x01, 0x80, 0x00, 0x00, 0x00, 0x01, 0xB3, 0x06, 0x30, 0xCC, 0x00, 0x00,
+0x00, 0x00, 0xDE, 0x01, 0x80, 0x00, 0x00, 0x00, 0x01, 0xB3, 0x0C, 0x3F, 0xCF, 0x80, 0x00, 0x00,
+0x00, 0xDE, 0x01, 0x80, 0x00, 0x00, 0x00, 0x01, 0x9B, 0x1C, 0x3F, 0xC3, 0xC0, 0x00, 0x00, 0x00,
+0xDE, 0x01, 0x80, 0x00, 0x00, 0x00, 0x01, 0x8B, 0x18, 0x30, 0xC0, 0xC0, 0x00, 0x00, 0x00, 0xDE,
+0x01, 0x80, 0x00, 0x00, 0x00, 0x01, 0x8F, 0x30, 0x30, 0xC8, 0xC0, 0x00, 0x00, 0x00, 0xDE, 0x01,
+0x80, 0x00, 0x00, 0x00, 0x01, 0x87, 0x3F, 0x30, 0xCF, 0xC0, 0x00, 0x00, 0x00, 0xDE, 0x01, 0x80,
+0x00, 0x00, 0x00, 0x01, 0x87, 0x3F, 0x30, 0xCF, 0x80, 0x00, 0x00, 0x00, 0xDE, 0x01, 0x80, 0x00,
+0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xDE, 0x01, 0xFF, 0x00, 0x00,
+0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xDE, 0x00, 0xFF, 0xC0, 0x00, 0x00,
+0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xDE, 0x00, 0x00, 0xE0, 0x00, 0x00, 0x00,
+0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xDE, 0x00, 0x00, 0x70, 0x00, 0x00, 0x00, 0x00,
+0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xDE, 0x00, 0x00, 0x3C, 0x00, 0x00, 0x00, 0x00, 0x00,
+0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xFE, 0x00, 0x00, 0x0F, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
+0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFE, 0x00, 0x00, 0x07, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
+0xFF, 0xFF, 0xFF, 0xFF, 0x9E, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+0x00, 0x00, 0x00, 0x0E
 };
 
+// The second logo frame is reproduced from anneallogo plus anneallogoDelta.
+// Retained here only as source artwork while the delta form is validated.
+#if 0
 const unsigned char anneallogo2 [] PROGMEM = {
 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
@@ -304,41 +431,30 @@ const unsigned char anneallogo2 [] PROGMEM = {
 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00
 };
 
+ #endif
+
+// Projectile image cropped to its non-blank 88x19 region. It is drawn at
+// (16,6), reconstructing the original 128x32 frame without storing blank data.
 const unsigned char projectile [] PROGMEM = {
-0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-0x00, 0x00, 0x00, 0x00, 0x00, 0x3F, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0x80, 0x00, 0x00, 0x00, 0x00,
-0x00, 0x00, 0x00, 0x00, 0x03, 0xFE, 0x00, 0x07, 0xC0, 0x01, 0xF0, 0x7F, 0x80, 0x00, 0x00, 0x00,
-0x00, 0x00, 0x00, 0x00, 0x3C, 0x1F, 0x00, 0x03, 0xF0, 0x00, 0xFC, 0x00, 0x78, 0x00, 0x00, 0x00,
-0x00, 0x00, 0x00, 0x01, 0xC0, 0x0F, 0xC0, 0x01, 0xFC, 0x00, 0x7F, 0x80, 0x04, 0x00, 0x00, 0x00,
-0x00, 0x00, 0x00, 0x06, 0x00, 0x03, 0xF0, 0x00, 0x7F, 0x00, 0x0F, 0xC0, 0x04, 0x00, 0x00, 0x00,
-0x00, 0x00, 0x00, 0x18, 0x00, 0x00, 0xFC, 0x00, 0x1F, 0x80, 0x03, 0xE0, 0x04, 0x00, 0x00, 0x00,
-0x00, 0x00, 0x00, 0xE0, 0x00, 0x00, 0x7F, 0x00, 0x07, 0xE0, 0x00, 0xC0, 0x04, 0x00, 0x00, 0x00,
-0x00, 0x00, 0x03, 0x00, 0x00, 0x00, 0x1F, 0xC0, 0x01, 0xF8, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00,
-0x00, 0x00, 0x0C, 0x00, 0x00, 0x00, 0x07, 0xE0, 0x00, 0x7E, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00,
-0x00, 0x00, 0x30, 0x00, 0x00, 0x00, 0x01, 0xF8, 0x00, 0x1F, 0x80, 0x00, 0x04, 0x00, 0x00, 0x00,
-0x00, 0x00, 0x0C, 0x00, 0x00, 0x00, 0x00, 0x7E, 0x00, 0x07, 0xE0, 0x00, 0x04, 0x00, 0x00, 0x00,
-0x00, 0x00, 0x03, 0x00, 0x00, 0x30, 0x00, 0x1F, 0x80, 0x03, 0xF8, 0x00, 0x04, 0x00, 0x00, 0x00,
-0x00, 0x00, 0x00, 0xE0, 0x00, 0x7C, 0x00, 0x0F, 0xE0, 0x00, 0xFE, 0x00, 0x04, 0x00, 0x00, 0x00,
-0x00, 0x00, 0x00, 0x18, 0x00, 0x3E, 0x00, 0x03, 0xF0, 0x00, 0x3F, 0x80, 0x04, 0x00, 0x00, 0x00,
-0x00, 0x00, 0x00, 0x06, 0x00, 0x1F, 0x80, 0x00, 0xFC, 0x00, 0x0F, 0xC0, 0x04, 0x00, 0x00, 0x00,
-0x00, 0x00, 0x00, 0x01, 0xC0, 0x07, 0xE0, 0x00, 0x3F, 0x00, 0x03, 0xE0, 0x04, 0x00, 0x00, 0x00,
-0x00, 0x00, 0x00, 0x00, 0x3C, 0x01, 0xF0, 0x00, 0x0F, 0x80, 0x00, 0xE0, 0x78, 0x00, 0x00, 0x00,
-0x00, 0x00, 0x00, 0x00, 0x03, 0xC0, 0xF8, 0x00, 0x07, 0xC0, 0x00, 0x7F, 0x80, 0x00, 0x00, 0x00,
-0x00, 0x00, 0x00, 0x00, 0x00, 0x3F, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0x80, 0x00, 0x00, 0x00, 0x00,
-0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00
+0x00, 0x00, 0x00, 0x3F, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0x80, 0x00, 0x00, 0x00, 0x03, 0xFE, 0x00,
+0x07, 0xC0, 0x01, 0xF0, 0x7F, 0x80, 0x00, 0x00, 0x3C, 0x1F, 0x00, 0x03, 0xF0, 0x00, 0xFC, 0x00,
+0x78, 0x00, 0x01, 0xC0, 0x0F, 0xC0, 0x01, 0xFC, 0x00, 0x7F, 0x80, 0x04, 0x00, 0x06, 0x00, 0x03,
+0xF0, 0x00, 0x7F, 0x00, 0x0F, 0xC0, 0x04, 0x00, 0x18, 0x00, 0x00, 0xFC, 0x00, 0x1F, 0x80, 0x03,
+0xE0, 0x04, 0x00, 0xE0, 0x00, 0x00, 0x7F, 0x00, 0x07, 0xE0, 0x00, 0xC0, 0x04, 0x03, 0x00, 0x00,
+0x00, 0x1F, 0xC0, 0x01, 0xF8, 0x00, 0x00, 0x04, 0x0C, 0x00, 0x00, 0x00, 0x07, 0xE0, 0x00, 0x7E,
+0x00, 0x00, 0x04, 0x30, 0x00, 0x00, 0x00, 0x01, 0xF8, 0x00, 0x1F, 0x80, 0x00, 0x04, 0x0C, 0x00,
+0x00, 0x00, 0x00, 0x7E, 0x00, 0x07, 0xE0, 0x00, 0x04, 0x03, 0x00, 0x00, 0x30, 0x00, 0x1F, 0x80,
+0x03, 0xF8, 0x00, 0x04, 0x00, 0xE0, 0x00, 0x7C, 0x00, 0x0F, 0xE0, 0x00, 0xFE, 0x00, 0x04, 0x00,
+0x18, 0x00, 0x3E, 0x00, 0x03, 0xF0, 0x00, 0x3F, 0x80, 0x04, 0x00, 0x06, 0x00, 0x1F, 0x80, 0x00,
+0xFC, 0x00, 0x0F, 0xC0, 0x04, 0x00, 0x01, 0xC0, 0x07, 0xE0, 0x00, 0x3F, 0x00, 0x03, 0xE0, 0x04,
+0x00, 0x00, 0x3C, 0x01, 0xF0, 0x00, 0x0F, 0x80, 0x00, 0xE0, 0x78, 0x00, 0x00, 0x03, 0xC0, 0xF8,
+0x00, 0x07, 0xC0, 0x00, 0x7F, 0x80, 0x00, 0x00, 0x00, 0x3F, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0x80,
+0x00
 };
 
+// The second projectile frame is reproduced from projectile plus projectileDelta.
+// Retained here only as source artwork while the delta form is validated.
+#if 0
 const unsigned char projectile2 [] PROGMEM = {
 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
@@ -374,6 +490,43 @@ const unsigned char projectile2 [] PROGMEM = {
 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00
 };
 
+
+#endif
+
+// XOR tiles which change the 100 ms alternate splash frames. Drawing one over
+// its base frame with SSD1306_INVERSE recreates the original pixels exactly.
+static const uint8_t anneallogoDelta[] PROGMEM = {
+  0x00, 0x60, 0xE0, 0x5F, 0x0C, 0xC0, 0xA7, 0x41, 0xF9, 0xF8,
+  0x00, 0xF0, 0xF0, 0x7D, 0x0C, 0xC0, 0x3F, 0x01, 0xF9, 0xFC,
+  0x00, 0xF0, 0xF0, 0x7D, 0x30, 0x30, 0x3C, 0x81, 0x81, 0x8C,
+  0x01, 0x98, 0xD8, 0x28, 0x35, 0x31, 0x54, 0xC1, 0x81, 0x8C,
+  0x01, 0x98, 0xD8, 0x28, 0x3F, 0xDE, 0x57, 0x41, 0xF1, 0xF8,
+  0x03, 0x0C, 0xCC, 0x02, 0xAF, 0xDC, 0xCF, 0x01, 0xF1, 0xF0,
+  0x03, 0xFC, 0xCC, 0x12, 0xAB, 0x33, 0x3C, 0x01, 0x81, 0x98,
+  0x03, 0xFC, 0xC6, 0x17, 0xC3, 0x33, 0x34, 0x01, 0x81, 0x98,
+  0x06, 0x06, 0xC6, 0x1F, 0xCC, 0xC6, 0xC9, 0x3D, 0xF9, 0x8C,
+  0x06, 0x06, 0xC2, 0x1F, 0x4C, 0xC6, 0xC9, 0x7D, 0xF9, 0x8C
+};
+
+static const uint8_t projectileDelta[] PROGMEM = {
+  0x3E, 0x0F, 0x87, 0xC1, 0xF1, 0xF0, 0x00,
+  0x1F, 0x07, 0xC3, 0xF0, 0xFC, 0xFC, 0x00,
+  0x0F, 0xC3, 0xF1, 0xFC, 0x7F, 0x7F, 0x80,
+  0x03, 0xF0, 0xFC, 0x7F, 0x1F, 0x8F, 0xC0,
+  0x00, 0xFC, 0x3F, 0x1F, 0x87, 0xE3, 0xE0,
+  0x18, 0x7F, 0x1F, 0xC7, 0xE1, 0xF8, 0xC0,
+  0x3E, 0x1F, 0xC7, 0xF1, 0xF8, 0x7E, 0x00,
+  0x1F, 0x87, 0xE1, 0xF8, 0x7E, 0x3F, 0x80,
+  0x0F, 0xE1, 0xF8, 0x7E, 0x1F, 0x8F, 0xC0,
+  0x03, 0xF0, 0x7E, 0x1F, 0x87, 0xE3, 0xE0,
+  0x30, 0xFC, 0x1F, 0x87, 0xE3, 0xF8, 0xE0,
+  0x7C, 0x3F, 0x0F, 0xE3, 0xF8, 0xFE, 0x00,
+  0x3E, 0x0F, 0xC3, 0xF0, 0xFC, 0x3F, 0x80,
+  0x1F, 0x87, 0xF0, 0xFC, 0x3F, 0x0F, 0xC0,
+  0x07, 0xE1, 0xFC, 0x3F, 0x0F, 0xC3, 0xE0,
+  0x01, 0xF0, 0x7E, 0x0F, 0x83, 0xE0, 0xE0,
+  0x00, 0xF8, 0x1F, 0x07, 0xC1, 0xF0, 0x00
+};
 
 //-- global variables declarations----------------------------------------
 static volatile tStateMachineStates g_SystemState = STATE_JUST_BOOTED;
@@ -427,8 +580,8 @@ static void preloadCase(void);
 static void loadCase(void);
 static void returnCaseFeederHome(void);
 static bool caseFeederStillMoving(void);
-static float readTemperature(uint8_t);
-static bool isTemperatureReadingValid(float const temperature);
+static int16_t readTemperature(void);
+static bool isTemperatureReadingValid(int16_t const temperature);
 static void addStepsToGo(uint16_t const steps);
 static void setStepsToGo(uint16_t const steps);
 static uint16_t getStepsToGo(void);
@@ -438,9 +591,21 @@ static void resetRunSafetyState(void);
 static void enterCooldown(bool const allowAutomaticRestart, bool const cycleStopRequested);
 static void advanceStoppedScreenSelection(void);
 static void advanceSettingsScreenSelection(void);
+static void advanceAnalysisMenuSelection(void);
 static void advanceProfileSlot(void);
 static void advanceProfileActionSelection(void);
 static void returnToStoppedScreen(void);
+static void enterAnalysis(void);
+static void beginAnalysis(void);
+static void sampleAnalysisCurrent(uint32_t const currentTime);
+static void finishAnalysis(bool const aborted);
+static void openAnalysisDropGate(void);
+static void showSavedAnalysis(void);
+static void drawAnalysisMenuScreen(void);
+static void drawAnalysisLoadScreen(void);
+static void drawAnalysisGraph(void);
+static void drawAnalysisStatus(bool const dumping);
+static void printAnalysisEnergy_J(uint32_t const energy_mJ);
 static void setFreeRunMode(void);
 static void setDumpButtonEnabled(bool const enabled);
 static void cycleCurrentMode(void);
@@ -460,10 +625,11 @@ static void saveEditedProfileName(void);
 static void advanceInfoScreenScroll(void);
 static bool lowCurrentGuardFault(uint16_t const cycleAverageCurrent_ma);
 static void drawCurrentMode(uint8_t const y, bool const selected);
-static void drawTemperature(uint8_t const y, float const temperature);
+static void printTemperatureTenths(int16_t const temperature);
+static void drawTemperature(uint8_t const y, int16_t const temperature);
 static void drawCaseCount(uint8_t const y, uint16_t const casesAnnealed);
 static void drawTimePanel(bool const selected);
-static void drawStoppedScreen(bool const fanIsOn, float const temperature, uint16_t const casesAnnealed);
+static void drawStoppedScreen(bool const fanIsOn, int16_t const temperature, uint16_t const casesAnnealed);
 static void drawSettingsScreen(void);
 static void drawProfilesScreen(void);
 static void drawProfileActionsScreen(void);
@@ -541,8 +707,8 @@ void setup()
   turnAnnealerOff();
   turnCoolingFanOff();
   closeDropGate();
-  #ifdef DEBUG
   Serial.begin(115200);
+  #ifdef DEBUG
   delay(20);
   Serial.println(F("Debug active."));
   printResetDiagnostics();
@@ -550,7 +716,7 @@ void setup()
 
   delay(200);
 
-  display.begin(SSD1306_SWITCHCAPVCC, DISPLAY_ADDRESS);
+  display.beginFixed128x32I2C();
 
   display.clearDisplay();
   // Setup text and draw splash screen
@@ -559,22 +725,24 @@ void setup()
   display.setCursor(0, 0);
 
   #ifndef DEBUG //dont do the splash startup in debug
-    display.drawBitmap(0, 0,  anneallogo, 128, 32, 1);
+    display.drawBitmap(0, 2, anneallogo, 120, 28, 1);
     display.display();
     delay(2000);
     display.clearDisplay();
-    display.drawBitmap(0, 0,  anneallogo2, 128, 32, 1);
+    display.drawBitmap(0, 2, anneallogo, 120, 28, 1);
+    display.drawBitmap(24, 11, anneallogoDelta, 80, 10, SSD1306_INVERSE);
     display.display();
     delay(2000);
 
     for(uint8_t i = 0; i <= 20; i++)
     {
       display.clearDisplay();
-      display.drawBitmap(0, 0,  projectile, 128, 32, 1);
+      display.drawBitmap(16, 6, projectile, 88, 19, 1);
       display.display();
       delay(100);
       display.clearDisplay();
-      display.drawBitmap(0, 0,  projectile2, 128, 32, 1);
+      display.drawBitmap(16, 6, projectile, 88, 19, 1);
+      display.drawBitmap(40, 7, projectileDelta, 56, 17, SSD1306_INVERSE);
       display.display();
       delay(100);
     }
@@ -684,7 +852,7 @@ ISR(TIMER2_COMPA_vect){//timer2 interrupt
   	StepToggle = 1;
   }
 
-  if ((g_SystemState == STATE_ANNEALING) && hasTimeElapsed(SystemTimeTarget, millis()))
+  if ((g_SystemState == STATE_ANNEALING || g_SystemState == STATE_ANALYSING) && hasTimeElapsed(SystemTimeTarget, millis()))
   {
     turnAnnealerOff();
   }
@@ -719,9 +887,10 @@ void loop()
   static uint16_t psuVoltage_mv;
   static uint16_t psuCurrent_ma;
   static bool manualDumpInProgress = false;
+  static uint32_t analysisModeKeyPressTime = 0;
   static uint32_t cooling_timer = 0;
   static uint32_t LoopStartTime;
-  static float temperature = 0;
+  static int16_t temperature = 0;
   static bool Just_Booted = 1;
   static bool Next_Cycle_Is_STOPPED = 0;
   static uint16_t CasesAnnealed = 0;
@@ -735,14 +904,18 @@ void loop()
   modeKey = readModeButton();
   upKey = readUpButton();
 
-  temperature = readTemperature(0);
+  // DS18B20 conversion takes longer than the 25 ms analysis sampler.
+  if(g_SystemState != STATE_ANALYSING)
+  {
+    temperature = readTemperature();
+  }
 
   // Leaving the cooldown screen must not make a new run possible until the
   // original hysteresis threshold has been reached.
   if(NumberDallasTempDevices != 0 &&
      isTemperatureReadingValid(temperature) &&
      g_RunSafety.cooldownLockActive &&
-     temperature < (TEMP_LIMIT - TEMP_HYSTERESIS))
+     temperature < ((TEMP_LIMIT - TEMP_HYSTERESIS) * TEMP_RAW_SCALE))
   {
     g_RunSafety.cooldownLockActive = false;
   }
@@ -768,11 +941,15 @@ void loop()
   {
     if (g_SystemState == STATE_STOPPED)
     {
-      if(g_RunSafety.cooldownLockActive)
+      if(g_UserSettings.stoppedScreenSelection == STOPPED_SCREEN_ANALYSE)
+      {
+        enterAnalysis();
+      }
+      else if(g_RunSafety.cooldownLockActive)
       {
         // The user may browse menus while cooling, but cannot start a run yet.
       }
-      else if(NumberDallasTempDevices != 0 && temperature > TEMP_LIMIT)
+      else if(NumberDallasTempDevices != 0 && temperature > (TEMP_LIMIT * TEMP_RAW_SCALE))
       {
         enterCooldown(false, false);
       }
@@ -804,10 +981,24 @@ void loop()
             g_SystemState == STATE_PROFILE_NAME_EDIT ||
             g_SystemState == STATE_PROFILE_DELETE_CONFIRM ||
             g_SystemState == STATE_PROFILE_SAVED ||
+            g_SystemState == STATE_ANALYSIS_MENU ||
             g_SystemState == STATE_DIAGNOSTICS ||
             g_SystemState == STATE_INFO)
     {
       // Menus always leave through their visible BACK > item and UP.
+    }
+    else if(g_SystemState == STATE_ANALYSIS_LOAD)
+    {
+      if(CurrentSensorPresent &&
+         !g_RunSafety.cooldownLockActive &&
+         (NumberDallasTempDevices == 0 || temperature <= (TEMP_LIMIT * TEMP_RAW_SCALE)))
+      {
+        beginAnalysis();
+      }
+    }
+    else if(g_SystemState == STATE_ANALYSIS_RESULT)
+    {
+      // Leave through the visible BACK > item with UP, like the other menus.
     }
     else if(g_SystemState == STATE_COOLDOWN)
     {
@@ -834,6 +1025,7 @@ void loop()
       closeDropGate();
       manualDumpInProgress = false;
     }
+    analysisModeKeyPressTime = 0;
   }
   else
   {
@@ -852,6 +1044,10 @@ void loop()
       else if(g_SystemState == STATE_SETTINGS)
       {
         advanceSettingsScreenSelection();
+      }
+      else if(g_SystemState == STATE_ANALYSIS_MENU)
+      {
+        advanceAnalysisMenuSelection();
       }
       else if(g_SystemState == STATE_PROFILES)
       {
@@ -873,11 +1069,32 @@ void loop()
       {
         advanceInfoScreenScroll();
       }
+      else if(g_SystemState == STATE_ANALYSIS_GATE_OPEN ||
+              g_SystemState == STATE_ANALYSIS_RESULT)
+      {
+        // The analysed case is already being, or has already been, dumped.
+      }
+      else if(g_SystemState == STATE_ANALYSIS_LOAD)
+      {
+        // MODE is reserved for navigating the Analyse menu or aborting a run.
+      }
+      else if(g_SystemState == STATE_ANALYSING)
+      {
+        analysisModeKeyPressTime = millis();
+      }
       else if(g_UserSettings.dumpButtonEnabled && CurrentMode == MODE_FREE_RUN)
       {
         openDropGate();
         manualDumpInProgress = true;
       }
+    }
+    else if(g_SystemState == STATE_ANALYSING &&
+            analysisModeKeyPressTime != 0 &&
+            hasTimeElapsed(analysisModeKeyPressTime + ANALYSIS_ABORT_HOLD_MS, millis()))
+    {
+      finishAnalysis(true);
+      openAnalysisDropGate();
+      analysisModeKeyPressTime = 0;
     }
   }
 
@@ -1098,6 +1315,99 @@ void loop()
     }
     break;
 
+    case STATE_ANALYSIS_MENU:
+    {
+      updateSystemState(g_SystemState);
+      if(upKey && !upKeyPrev)
+      {
+        if(g_UserSettings.analysisMenuSelection == ANALYSIS_MENU_NEW)
+        {
+          updateSystemState(STATE_ANALYSIS_LOAD);
+        }
+        else if(g_UserSettings.analysisMenuSelection == ANALYSIS_MENU_REVIEW)
+        {
+          showSavedAnalysis();
+        }
+        else
+        {
+          returnToStoppedScreen();
+        }
+        break;
+      }
+      drawAnalysisMenuScreen();
+    }
+    break;
+
+    case STATE_ANALYSIS_LOAD:
+    {
+      updateSystemState(g_SystemState);
+      if(upKey && !upKeyPrev)
+      {
+        updateSystemState(g_Analysis.graphValid ? STATE_ANALYSIS_MENU : STATE_STOPPED);
+        break;
+      }
+      drawAnalysisLoadScreen();
+    }
+    break;
+
+    case STATE_ANALYSING:
+    {
+      uint32_t const currentTime = millis();
+      updateSystemState(g_SystemState);
+      sampleAnalysisCurrent(currentTime);
+      if(g_SystemState != STATE_ANALYSING)
+      {
+        break;
+      }
+      if(hasTimeElapsed(g_Analysis.startTime + ANALYSIS_DURATION_MS, currentTime))
+      {
+        finishAnalysis(false);
+        openAnalysisDropGate();
+        break;
+      }
+      if(hasTimeElapsed(g_Analysis.lastGraphDrawTime + ANALYSIS_GRAPH_REFRESH_MS, currentTime))
+      {
+        drawAnalysisGraph();
+        g_Analysis.lastGraphDrawTime = currentTime;
+      }
+    }
+    break;
+
+    case STATE_ANALYSIS_GATE_OPEN:
+    {
+      uint32_t const currentTime = millis();
+      uint32_t const gateCloseTime = SystemTimeTarget;
+      updateSystemState(g_SystemState);
+      if(hasTimeElapsed(gateCloseTime, currentTime))
+      {
+        closeDropGate();
+        updateSystemState(STATE_ANALYSIS_RESULT);
+        break;
+      }
+      if(!hasTimeElapsed(gateCloseTime - (ANALYSIS_GATE_OPEN_PERIOD_MS - ANALYSIS_DUMP_STATUS_MS), currentTime))
+      {
+        drawAnalysisStatus(true);
+      }
+      else
+      {
+        drawAnalysisGraph();
+      }
+    }
+    break;
+
+    case STATE_ANALYSIS_RESULT:
+    {
+      updateSystemState(g_SystemState);
+      if(upKey && !upKeyPrev)
+      {
+        g_UserSettings.analysisMenuSelection = ANALYSIS_MENU_REVIEW;
+        updateSystemState(STATE_ANALYSIS_MENU);
+        break;
+      }
+      drawAnalysisStatus(false);
+    }
+    break;
+
     case STATE_ANNEALING:
     {
       if (hasSystemStateChanged())
@@ -1185,14 +1495,14 @@ void loop()
         if(CurrentSensorPresent)
         {
           display.print(psuCurrent_ma/1000,DEC);
-          display.print(F("."));
+          display.write('.');
           display.print((psuCurrent_ma%1000)/100, DEC);
           display.print(F("A  "));
         }
         display.print(remainingTime/1000, DEC);
-        display.print(F("."));
+        display.write('.');
         display.print((remainingTime%1000)/100, DEC);
-        display.print(F("s"));
+        display.write('s');
         display.display();
       }
 
@@ -1221,9 +1531,9 @@ void loop()
         if(NumberDallasTempDevices != 0)
         {
           display.setCursor(0, 16);
-          display.print(temperature, 1);
+          printTemperatureTenths(temperature);
           display.print((char PROGMEM)248);
-          display.print(F("C"));
+          display.write('C');
         }
         display.display();
         break;
@@ -1231,7 +1541,7 @@ void loop()
       closeDropGate();
       CasesAnnealed++;
 
-      if(NumberDallasTempDevices != 0 && temperature > TEMP_LIMIT)
+      if(NumberDallasTempDevices != 0 && temperature > (TEMP_LIMIT * TEMP_RAW_SCALE))
       {
         enterCooldown(true, Next_Cycle_Is_STOPPED);
         if(CurrentMode == MODE_AUTOMATIC)
@@ -1301,9 +1611,9 @@ void loop()
           display.println(F("LOADING"));
         #endif
         display.print(remainingTime/1000, DEC);
-        display.print(".");
+        display.print('.');
         display.print((remainingTime%1000)/100, DEC);
-        display.print("s");
+        display.print('s');
 
         #ifdef SHOW_CASE_COUNT
           display.setCursor(65, 0);
@@ -1418,9 +1728,9 @@ void loop()
       display.setCursor(0, 0);
       display.println(F("COOLDOWN"));
       display.setCursor(0, 16);
-      display.print(temperature, 1);
+      printTemperatureTenths(temperature);
       display.print((char PROGMEM)248);
-      display.print(F("C"));
+      display.write('C');
       display.setTextSize(1);
       if(g_RunSafety.cooldownRestartPending)
       {
@@ -1435,7 +1745,7 @@ void loop()
       display.display();
       if(NumberDallasTempDevices != 0 &&
          isTemperatureReadingValid(temperature) &&
-         temperature < (TEMP_LIMIT - TEMP_HYSTERESIS)) //has it cooled enough to resume?
+         temperature < ((TEMP_LIMIT - TEMP_HYSTERESIS) * TEMP_RAW_SCALE)) //has it cooled enough to resume?
       {
         if(g_RunSafety.cooldownRestartPending)
         {
@@ -1461,7 +1771,7 @@ void loop()
     case STATE_JUST_BOOTED:
     {
       //temperature = sensors.getTempCByIndex(0);
-      if(NumberDallasTempDevices != 0 && temperature > TEMP_LIMIT)
+      if(NumberDallasTempDevices != 0 && temperature > (TEMP_LIMIT * TEMP_RAW_SCALE))
       {
         enterCooldown(false, false);
       }
@@ -1503,7 +1813,7 @@ void loop()
 
   Serial.print(F("Annealer current;"));
   Serial.print(psuCurrent_ma/1000,DEC);
-  Serial.print(F("."));
+  Serial.write('.');
   Serial.print((psuCurrent_ma%1000)/100, DEC);
   Serial.print(F(";A;"));
 
@@ -1513,15 +1823,15 @@ void loop()
 
   Serial.print("Step count;");
   Serial.print(getStepsToGo());
-  Serial.print(F(";"));
+  Serial.write(';');
 
   Serial.print("Steps from home;");
   Serial.print(getStepsFromHome());
-  Serial.print(F(";"));
+  Serial.write(';');
 
   Serial.print(F("State;"));
   Serial.print(g_SystemState);
-  Serial.print(F(";"));
+  Serial.write(';');
 
   Serial.print(F("Loop Time Remaining;"));
   Serial.print(LoopStartTime + LOOP_TIME - millis());
@@ -1531,7 +1841,8 @@ void loop()
   #endif
 
 
-  while(!hasTimeElapsed(LoopStartTime + LOOP_TIME, millis())) // wait for the loop time to expire
+  uint32_t const loopPeriod = g_SystemState == STATE_ANALYSING ? ANALYSIS_SAMPLE_PERIOD_MS : LOOP_TIME;
+  while(!hasTimeElapsed(LoopStartTime + loopPeriod, millis())) // wait for the loop time to expire
   {
 
       if(((millis() & 0x00003FFF) == 0x00003FFF) && (annealTimeChanged == true)) // write to EEPROM every ~16 seconds only if anneal time has changed
@@ -1562,6 +1873,7 @@ static void loadUserSettings(void)
   g_UserSettings.dumpButtonEnabled = EEPROM.read(EEPROM_ADDRESS_DUMP_BUTTON) == 1;
   g_UserSettings.stoppedScreenSelection = STOPPED_SCREEN_TIME;
   g_UserSettings.settingsScreenSelection = SETTINGS_SCREEN_AUTO_RESTART;
+  g_UserSettings.analysisMenuSelection = ANALYSIS_MENU_NEW;
   g_UserSettings.profileSlot = 0;
   g_UserSettings.profileActionSelection = PROFILE_ACTION_LOAD;
   g_UserSettings.profileNameCursor = 0;
@@ -1826,6 +2138,14 @@ static void advanceSettingsScreenSelection(void)
 }
 
 /*---------------------------------------------------------------------------*/
+/*! @brief      Move to the next Analyse menu item.
+*//*-------------------------------------------------------------------------*/
+static void advanceAnalysisMenuSelection(void)
+{
+  g_UserSettings.analysisMenuSelection = (tAnalysisMenuSelection)((g_UserSettings.analysisMenuSelection + 1) % ANALYSIS_MENU_SELECTION_COUNT);
+}
+
+/*---------------------------------------------------------------------------*/
 /*! @brief      Select the next stored cartridge-profile slot.
 *//*-------------------------------------------------------------------------*/
 static void advanceProfileSlot(void)
@@ -1847,6 +2167,183 @@ static void advanceProfileActionSelection(void)
 static void returnToStoppedScreen(void)
 {
   updateSystemState(STATE_STOPPED);
+}
+
+/*---------------------------------------------------------------------------*/
+/*! @brief      Enter Analyse directly until a completed graph is available.
+*//*-------------------------------------------------------------------------*/
+static void enterAnalysis(void)
+{
+  if(g_Analysis.graphValid)
+  {
+    g_UserSettings.analysisMenuSelection = ANALYSIS_MENU_NEW;
+    updateSystemState(STATE_ANALYSIS_MENU);
+  }
+  else
+  {
+    updateSystemState(STATE_ANALYSIS_LOAD);
+  }
+}
+
+/*---------------------------------------------------------------------------*/
+/*! @brief      Initialise a manual, current-trace analysis run.
+*//*-------------------------------------------------------------------------*/
+static void beginAnalysis(void)
+{
+  uint32_t const currentTime = millis();
+
+  // Keep one height per OLED column so the completed trace can be reconstructed
+  // after other screens have replaced the display framebuffer.
+  display.clearDisplay();
+  g_Analysis.startTime = currentTime;
+  g_Analysis.nextSampleTime = currentTime;
+  g_Analysis.lastSampleTime = currentTime;
+  g_Analysis.lastGraphDrawTime = currentTime;
+  g_Analysis.inputEnergy_mJ = 0;
+  g_Analysis.peakCurrent_ma = 0;
+  g_Analysis.elapsedTime_ms = 0;
+  g_Analysis.graphColumn = UINT8_MAX;
+  g_Analysis.graphCurrentTotal_ma = 0;
+  g_Analysis.graphCurrent_ma = 0;
+  g_Analysis.graphCurrentSamples = 0;
+  g_Analysis.graphHeight = 0;
+  memset(g_Analysis.graphHeights, 0, sizeof(g_Analysis.graphHeights));
+  g_Analysis.graphValid = false;
+  drawAnalysisGraph();
+  setSystemTimeTarget(currentTime + ANALYSIS_DURATION_MS);
+  digitalWrite(g_FeederStepperEnPin,HIGH);
+  closeDropGate();
+  turnStartStopLedOn();
+  turnAnnealerOn();
+  Serial.println(F("ANALYSE,START"));
+  updateSystemState(STATE_ANALYSING);
+}
+
+/*---------------------------------------------------------------------------*/
+/*! @brief      Sample and stream the analysis trace at a fixed target rate.
+*//*-------------------------------------------------------------------------*/
+static void sampleAnalysisCurrent(uint32_t const currentTime)
+{
+  uint16_t current_ma;
+  uint16_t averageCurrent_ma;
+  uint16_t elapsed_ms;
+  uint8_t column;
+  uint8_t graphHeight;
+  uint32_t samplePeriod_ms;
+
+  if(!hasTimeElapsed(g_Analysis.nextSampleTime, currentTime))
+  {
+    return;
+  }
+  g_Analysis.nextSampleTime = currentTime + ANALYSIS_SAMPLE_PERIOD_MS;
+  elapsed_ms = currentTime - g_Analysis.startTime;
+  if(elapsed_ms >= ANALYSIS_DURATION_MS)
+  {
+    elapsed_ms = ANALYSIS_DURATION_MS - 1;
+  }
+  current_ma = readPsuCurrent_ma();
+  samplePeriod_ms = currentTime - g_Analysis.lastSampleTime;
+  g_Analysis.lastSampleTime = currentTime;
+  g_Analysis.inputEnergy_mJ += (uint32_t)current_ma * samplePeriod_ms * ANALYSIS_SUPPLY_VOLTAGE_V / 1000UL;
+  if(current_ma > g_Analysis.peakCurrent_ma)
+  {
+    g_Analysis.peakCurrent_ma = current_ma;
+  }
+  column = ((uint32_t)elapsed_ms * ANALYSIS_GRAPH_COLUMNS) / ANALYSIS_DURATION_MS;
+  if(column >= ANALYSIS_GRAPH_COLUMNS)
+  {
+    column = ANALYSIS_GRAPH_COLUMNS - 1;
+  }
+  if(column != g_Analysis.graphColumn)
+  {
+    g_Analysis.graphColumn = column;
+    g_Analysis.graphCurrentTotal_ma = current_ma;
+    g_Analysis.graphCurrentSamples = 1;
+  }
+  else
+  {
+    g_Analysis.graphCurrentTotal_ma += current_ma;
+    g_Analysis.graphCurrentSamples++;
+  }
+  averageCurrent_ma = g_Analysis.graphCurrentTotal_ma / g_Analysis.graphCurrentSamples;
+  g_Analysis.graphCurrent_ma = averageCurrent_ma;
+  graphHeight = averageCurrent_ma >= ANALYSIS_GRAPH_MAX_CURRENT_MA ?
+    31 : ((uint32_t)averageCurrent_ma * 31UL) / ANALYSIS_GRAPH_MAX_CURRENT_MA;
+  g_Analysis.graphHeight = graphHeight;
+  g_Analysis.graphHeights[column] = graphHeight;
+
+  Serial.print(F("ANALYSE,SAMPLE,t_ms="));
+  Serial.print(elapsed_ms);
+  Serial.print(F(",current_ma="));
+  Serial.print(current_ma);
+  Serial.print(FPSTR(TEXT_INPUT_ENERGY));
+  printAnalysisEnergy_J(g_Analysis.inputEnergy_mJ);
+  Serial.println();
+
+  if(current_ma >= PSU_OVERCURRENT)
+  {
+    turnAnnealerOff();
+    turnStartStopLedOff();
+    updateSystemState(STATE_OVERCURRENT_WARNING);
+  }
+}
+
+/*---------------------------------------------------------------------------*/
+/*! @brief      Finish analysis and publish its aggregate values to serial.
+*//*-------------------------------------------------------------------------*/
+static void finishAnalysis(bool const aborted)
+{
+  turnAnnealerOff();
+  turnStartStopLedOff();
+  g_Analysis.elapsedTime_ms = millis() - g_Analysis.startTime;
+  if(g_Analysis.elapsedTime_ms > ANALYSIS_DURATION_MS)
+  {
+    g_Analysis.elapsedTime_ms = ANALYSIS_DURATION_MS;
+  }
+  g_Analysis.graphValid = g_Analysis.graphColumn != UINT8_MAX;
+  if(aborted)
+  {
+    Serial.print(F("ANALYSE,ABORT,reason=USER ABORT,t_ms="));
+  }
+  else
+  {
+    Serial.print(F("ANALYSE,END,t_ms="));
+  }
+  Serial.print(g_Analysis.elapsedTime_ms);
+  Serial.print(FPSTR(TEXT_INPUT_ENERGY));
+  printAnalysisEnergy_J(g_Analysis.inputEnergy_mJ);
+  Serial.print(F(",peak_ma="));
+  Serial.println(g_Analysis.peakCurrent_ma);
+  updateSystemState(STATE_ANALYSIS_RESULT);
+}
+
+/*---------------------------------------------------------------------------*/
+/*! @brief      Drop the analysed case for a fixed, operator-visible period.
+*//*-------------------------------------------------------------------------*/
+static void openAnalysisDropGate(void)
+{
+  turnAnnealerOff();
+  turnStartStopLedOff();
+  drawAnalysisGraph();
+  openDropGate();
+  setSystemTimeTarget(millis() + ANALYSIS_GATE_OPEN_PERIOD_MS);
+  Serial.println(F("ANALYSE,GATE_OPEN"));
+  updateSystemState(STATE_ANALYSIS_GATE_OPEN);
+}
+
+/*---------------------------------------------------------------------------*/
+/*! @brief      Reconstruct the retained analysis graph in the OLED buffer.
+*//*-------------------------------------------------------------------------*/
+static void showSavedAnalysis(void)
+{
+  if(!g_Analysis.graphValid)
+  {
+    updateSystemState(STATE_ANALYSIS_LOAD);
+    return;
+  }
+
+  drawAnalysisGraph();
+  updateSystemState(STATE_ANALYSIS_RESULT);
 }
 
 /*---------------------------------------------------------------------------*/
@@ -1918,6 +2415,10 @@ static void updateStoppedScreenSetting(bool const rapidTimeAdjust)
   else if(g_UserSettings.stoppedScreenSelection == STOPPED_SCREEN_MODE)
   {
     cycleCurrentMode();
+  }
+  else if(g_UserSettings.stoppedScreenSelection == STOPPED_SCREEN_ANALYSE)
+  {
+    enterAnalysis();
   }
   else if(g_UserSettings.stoppedScreenSelection == STOPPED_SCREEN_SETTINGS)
   {
@@ -2044,16 +2545,36 @@ static void drawCurrentMode(uint8_t const y, bool const selected)
 }
 
 /*---------------------------------------------------------------------------*/
+/*! @brief      Print a temperature rounded to one decimal place without
+                linking Print::printFloat().
+*//*-------------------------------------------------------------------------*/
+static void printTemperatureTenths(int16_t const temperature)
+{
+  int16_t tenths = ((int32_t)temperature * 10 + (temperature < 0 ? -(TEMP_RAW_SCALE / 2) : (TEMP_RAW_SCALE / 2))) / TEMP_RAW_SCALE;
+  uint8_t const fractionalTenths = tenths < 0 ? (uint8_t)(-tenths % 10) : (uint8_t)(tenths % 10);
+
+  // C/C++ integer division truncates toward zero, so preserve the sign for
+  // valid readings between -1.0 C and 0.0 C (for example, -0.5 C).
+  if(tenths < 0 && tenths > -10)
+  {
+    display.write('-');
+  }
+  display.print(tenths / 10);
+  display.write('.');
+  display.print(fractionalTenths);
+}
+
+/*---------------------------------------------------------------------------*/
 /*! @brief      Draw temperature when a sensor is fitted.
 *//*-------------------------------------------------------------------------*/
-static void drawTemperature(uint8_t const y, float const temperature)
+static void drawTemperature(uint8_t const y, int16_t const temperature)
 {
   if(NumberDallasTempDevices != 0)
   {
     display.setCursor(RIGHT_PANEL_X, y);
-    display.print(temperature, 1);
+    printTemperatureTenths(temperature);
     display.print((char PROGMEM)248);
-    display.print(F("C"));
+    display.write('C');
     if(g_RunSafety.cooldownLockActive)
     {
       display.print(F(" COOL!"));
@@ -2085,16 +2606,152 @@ static void drawTimePanel(bool const selected)
   display.setTextSize(2);
   display.setCursor(0,16);
   display.print(g_UserSettings.annealTime_ms/1000, DEC);
-  display.print(F("."));
+  display.write('.');
   display.print((g_UserSettings.annealTime_ms%1000)/100, DEC);
-  display.print(F("s"));
+  display.write('s');
   display.setTextSize(1);
+}
+
+/*---------------------------------------------------------------------------*/
+/*! @brief      Draw the Analyse actions available after a retained run.
+*//*-------------------------------------------------------------------------*/
+static void drawAnalysisMenuScreen(void)
+{
+  display.clearDisplay();
+  drawTimePanel(false);
+  display.setCursor(RIGHT_PANEL_X, 0);
+  display.print(F("ANALYSE"));
+  display.setCursor(RIGHT_PANEL_X, 8);
+  if(g_UserSettings.analysisMenuSelection == ANALYSIS_MENU_NEW) display.setTextColor(BLACK, WHITE);
+  display.print(FPSTR(TEXT_NEW_ITEM));
+  display.setTextColor(WHITE);
+  display.setCursor(RIGHT_PANEL_X, 16);
+  if(g_UserSettings.analysisMenuSelection == ANALYSIS_MENU_REVIEW) display.setTextColor(BLACK, WHITE);
+  display.print(FPSTR(TEXT_REVIEW_ITEM));
+  display.setTextColor(WHITE);
+  display.setCursor(RIGHT_PANEL_X, 24);
+  if(g_UserSettings.analysisMenuSelection == ANALYSIS_MENU_BACK) display.setTextColor(BLACK, WHITE);
+  display.print(FPSTR(TEXT_BACK_ITEM));
+  display.setTextColor(WHITE);
+  display.drawLine(54,0,54,32,WHITE);
+  display.display();
+}
+
+/*---------------------------------------------------------------------------*/
+/*! @brief      Draw the analysis prompt or a current-sensor requirement.
+*//*-------------------------------------------------------------------------*/
+static void drawAnalysisLoadScreen(void)
+{
+  display.clearDisplay();
+  display.setTextSize(2);
+  display.setCursor(0,0);
+  display.println(F("ANALYSE"));
+  display.setTextSize(1);
+  display.setCursor(0,17);
+  if(CurrentSensorPresent)
+  {
+    display.println(F("LOAD CASE"));
+    display.setCursor(0,25);
+    display.print(F("PRESS START"));
+  }
+  else
+  {
+    display.println(F("CUR SENSOR"));
+    display.setCursor(0,25);
+    display.print(F("REQUIRED"));
+  }
+  display.display();
+}
+
+/*---------------------------------------------------------------------------*/
+/*! @brief      Draw the full-width, fixed-scale eight-second current trace.
+*//*-------------------------------------------------------------------------*/
+static void drawAnalysisGraph(void)
+{
+  uint8_t column;
+  uint16_t const energy_J = (g_Analysis.inputEnergy_mJ + 500UL) / 1000UL;
+
+  display.clearDisplay();
+  if(g_Analysis.graphColumn != UINT8_MAX)
+  {
+    for(column = 0; column <= g_Analysis.graphColumn; column++)
+    {
+      display.drawPixel(column, 31 - g_Analysis.graphHeights[column], WHITE);
+    }
+  }
+
+  display.setTextSize(1);
+  display.setTextColor(WHITE);
+  display.fillRect(42, 24, 42, 8, BLACK);
+  display.setCursor(42, 24);
+  display.print(F("A:"));
+  display.print(g_Analysis.graphCurrent_ma / 1000);
+  display.write('.');
+  display.print((g_Analysis.graphCurrent_ma % 1000) / 100);
+  display.write('A');
+  display.fillRect(ANALYSIS_ENERGY_X, 24, SCREEN_WIDTH - ANALYSIS_ENERGY_X, 8, BLACK);
+  display.setCursor(ANALYSIS_ENERGY_X, 24);
+  display.print(F("J:"));
+  display.print(energy_J);
+  display.display();
+}
+
+/*---------------------------------------------------------------------------*/
+/*! @brief      Overlay analysis completion or dumping status on the graph.
+*//*-------------------------------------------------------------------------*/
+static void drawAnalysisStatus(bool const dumping)
+{
+  display.setTextSize(1);
+  if(dumping)
+  {
+    display.fillRect(0, 24, SCREEN_WIDTH, 8, BLACK);
+    display.setCursor(0, 24);
+    display.setTextColor(WHITE);
+    display.print(F("DUMPING..."));
+  }
+  else
+  {
+    display.fillRect(0, 24, SCREEN_WIDTH, 8, BLACK);
+    display.setCursor(0, 24);
+    display.setTextColor(BLACK, WHITE);
+    display.print(FPSTR(TEXT_BACK_ITEM));
+    display.setTextColor(WHITE);
+    display.print(F(" A:"));
+    display.print(g_Analysis.peakCurrent_ma / 1000);
+    display.write('.');
+    display.print((g_Analysis.peakCurrent_ma % 1000) / 100);
+    display.write('A');
+    display.setCursor(ANALYSIS_ENERGY_X, 24);
+    display.print(F("J:"));
+    display.print((g_Analysis.inputEnergy_mJ + 500UL) / 1000UL);
+  }
+  display.display();
+}
+
+/*---------------------------------------------------------------------------*/
+/*! @brief      Print integer millijoules as a three-decimal joule value.
+*//*-------------------------------------------------------------------------*/
+static void printAnalysisEnergy_J(uint32_t const energy_mJ)
+{
+  uint16_t const fractional_mJ = energy_mJ % 1000UL;
+
+  Serial.print(energy_mJ / 1000UL);
+  Serial.write('.');
+  if(fractional_mJ < 100)
+  {
+    Serial.write('0');
+  }
+  if(fractional_mJ < 10)
+  {
+    Serial.write('0');
+  }
+  Serial.print(fractional_mJ);
 }
 
 /*---------------------------------------------------------------------------*/
 /*! @brief      Draw the stopped screen and its selected right-panel item.
 *//*-------------------------------------------------------------------------*/
-static void drawStoppedScreen(bool const fanIsOn, float const temperature, uint16_t const casesAnnealed)
+static void drawStoppedScreen(bool const fanIsOn, int16_t const temperature, uint16_t const casesAnnealed)
 {
   display.clearDisplay();
   drawTimePanel(g_UserSettings.stoppedScreenSelection == STOPPED_SCREEN_TIME);
@@ -2115,7 +2772,7 @@ static void drawStoppedScreen(bool const fanIsOn, float const temperature, uint1
     drawTemperature(16, temperature);
     display.setCursor(RIGHT_PANEL_X,24);
     display.setTextColor(BLACK, WHITE);
-    display.print(F("SETTINGS >"));
+    display.print(FPSTR(TEXT_SETTINGS_ITEM));
     display.setTextColor(WHITE);
   }
   else if(g_UserSettings.stoppedScreenSelection == STOPPED_SCREEN_PROFILES)
@@ -2123,32 +2780,45 @@ static void drawStoppedScreen(bool const fanIsOn, float const temperature, uint1
     drawCaseCount(0, casesAnnealed);
     drawTemperature(8, temperature);
     display.setCursor(RIGHT_PANEL_X,16);
-    display.print(F("SETTINGS >"));
+    display.print(FPSTR(TEXT_SETTINGS_ITEM));
     display.setCursor(RIGHT_PANEL_X,24);
     display.setTextColor(BLACK, WHITE);
-    display.print(F("PROFILES >"));
+    display.print(FPSTR(TEXT_PROFILES_ITEM));
+    display.setTextColor(WHITE);
+  }
+  else if(g_UserSettings.stoppedScreenSelection == STOPPED_SCREEN_ANALYSE)
+  {
+    drawTemperature(0, temperature);
+    display.setCursor(RIGHT_PANEL_X,8);
+    display.print(FPSTR(TEXT_SETTINGS_ITEM));
+    display.setCursor(RIGHT_PANEL_X,16);
+    display.print(FPSTR(TEXT_PROFILES_ITEM));
+    display.setCursor(RIGHT_PANEL_X,24);
+    display.setTextColor(BLACK, WHITE);
+    display.print(FPSTR(TEXT_ANALYSE_ITEM));
     display.setTextColor(WHITE);
   }
   else if(g_UserSettings.stoppedScreenSelection == STOPPED_SCREEN_INFO)
   {
-    drawTemperature(0, temperature);
+    display.setCursor(RIGHT_PANEL_X,0);
+    display.print(FPSTR(TEXT_SETTINGS_ITEM));
     display.setCursor(RIGHT_PANEL_X,8);
-    display.print(F("SETTINGS >"));
+    display.print(FPSTR(TEXT_PROFILES_ITEM));
     display.setCursor(RIGHT_PANEL_X,16);
-    display.print(F("PROFILES >"));
+    display.print(FPSTR(TEXT_ANALYSE_ITEM));
     display.setCursor(RIGHT_PANEL_X,24);
     display.setTextColor(BLACK, WHITE);
-    display.print(F("INFO >"));
+    display.print(FPSTR(TEXT_INFO_ITEM));
     display.setTextColor(WHITE);
   }
   else
   {
     display.setCursor(RIGHT_PANEL_X,0);
-    display.print(F("SETTINGS >"));
+    display.print(FPSTR(TEXT_PROFILES_ITEM));
     display.setCursor(RIGHT_PANEL_X,8);
-    display.print(F("PROFILES >"));
+    display.print(FPSTR(TEXT_ANALYSE_ITEM));
     display.setCursor(RIGHT_PANEL_X,16);
-    display.print(F("INFO >"));
+    display.print(FPSTR(TEXT_INFO_ITEM));
     display.setCursor(RIGHT_PANEL_X,24);
     display.setTextColor(BLACK, WHITE);
     display.print(F("DIAGNOSTICS>"));
@@ -2171,16 +2841,16 @@ static void drawSettingsScreen(void)
   display.setCursor(RIGHT_PANEL_X,8);
   if(g_UserSettings.settingsScreenSelection == SETTINGS_SCREEN_AUTO_RESTART) display.setTextColor(BLACK, WHITE);
   display.print(F("RESTART: "));
-  display.print(g_UserSettings.autoRestartAfterCooldown ? F("ON") : F("OFF"));
+  display.print(g_UserSettings.autoRestartAfterCooldown ? FPSTR(TEXT_ON) : FPSTR(TEXT_OFF));
   display.setTextColor(WHITE);
   display.setCursor(RIGHT_PANEL_X,16);
   if(g_UserSettings.settingsScreenSelection == SETTINGS_SCREEN_DUMP_BUTTON) display.setTextColor(BLACK, WHITE);
   display.print(F("DUMP: "));
-  display.print(g_UserSettings.dumpButtonEnabled ? F("ON") : F("OFF"));
+  display.print(g_UserSettings.dumpButtonEnabled ? FPSTR(TEXT_ON) : FPSTR(TEXT_OFF));
   display.setTextColor(WHITE);
   display.setCursor(RIGHT_PANEL_X,24);
   if(g_UserSettings.settingsScreenSelection == SETTINGS_SCREEN_BACK) display.setTextColor(BLACK, WHITE);
-  display.print(F("BACK >"));
+  display.print(FPSTR(TEXT_BACK_ITEM));
   display.setTextColor(WHITE);
   display.drawLine(54,0,54,32,WHITE);
   display.display();
@@ -2197,16 +2867,16 @@ static void drawProfilesScreen(void)
   display.setCursor(RIGHT_PANEL_X, 0);
   if(g_UserSettings.profileSlot >= PROFILE_COUNT)
   {
-    display.print(F("PROFILES"));
+    display.print(FPSTR(TEXT_PROFILES));
     display.setCursor(RIGHT_PANEL_X, 24);
     display.setTextColor(BLACK, WHITE);
-    display.print(F("BACK >"));
+    display.print(FPSTR(TEXT_BACK_ITEM));
     display.setTextColor(WHITE);
   }
   else
   {
     // A dedicated name row shows all ten stored characters without clipping.
-    display.print(F("PROFILES"));
+    display.print(FPSTR(TEXT_PROFILES));
     display.setCursor(RIGHT_PANEL_X, 8);
     if(loadProfile(g_UserSettings.profileSlot, &profile))
     {
@@ -2231,13 +2901,12 @@ static void drawProfilesScreen(void)
 *//*-------------------------------------------------------------------------*/
 static void drawProfileActionsScreen(void)
 {
-  static char const * const actions[] = { "LOAD >", "SAVE >", "RENAME >", "DELETE >", "BACK >" };
   uint8_t row;
   uint8_t action;
   display.clearDisplay();
   drawTimePanel(false);
   display.setCursor(RIGHT_PANEL_X, 0);
-  display.print(F("P"));
+  display.write('P');
   display.print(g_UserSettings.profileSlot + 1);
   display.print(F(" ACTIONS"));
   for(row = 0; row < 3; row++)
@@ -2249,7 +2918,7 @@ static void drawProfileActionsScreen(void)
     }
     display.setCursor(RIGHT_PANEL_X, 8 + (row * 8));
     if(action == g_UserSettings.profileActionSelection) display.setTextColor(BLACK, WHITE);
-    display.print(actions[action]);
+    display.print(FPSTR(pgm_read_word(&PROFILE_ACTION_TEXT[action])));
     display.setTextColor(WHITE);
   }
   display.drawLine(54,0,54,32,WHITE);
@@ -2271,22 +2940,22 @@ static void drawProfileNameEditScreen(void)
   display.setCursor(g_UserSettings.profileNameCursor * 6, 18);
   if(g_UserSettings.profileNameCursor < PROFILE_NAME_LENGTH)
   {
-    display.print(F("^"));
+    display.write('^');
   }
   display.setCursor(0, 24);
   if(g_UserSettings.profileNameCursor == PROFILE_NAME_LENGTH) display.setTextColor(BLACK, WHITE);
   if(g_UserSettings.profileNameCursor == PROFILE_NAME_LENGTH)
   {
-    display.print(F("SAVE >"));
+    display.print(FPSTR(TEXT_SAVE_ITEM));
   }
   else if(g_UserSettings.profileNameCursor == PROFILE_NAME_LENGTH + 1)
   {
     display.setTextColor(BLACK, WHITE);
-    display.print(F("BACK >"));
+    display.print(FPSTR(TEXT_BACK_ITEM));
   }
   else
   {
-    display.print(F("SAVE >"));
+    display.print(FPSTR(TEXT_SAVE_ITEM));
   }
   display.setTextColor(WHITE);
   display.display();
@@ -2308,7 +2977,7 @@ static void drawProfileDeleteConfirmScreen(void)
   display.setTextColor(WHITE);
   display.setCursor(0, 24);
   if(!g_UserSettings.profileDeleteConfirmed) display.setTextColor(BLACK, WHITE);
-  display.print(F("BACK >"));
+  display.print(FPSTR(TEXT_BACK_ITEM));
   display.setTextColor(WHITE);
   display.display();
 }
@@ -2321,7 +2990,7 @@ static void drawProfileSavedScreen(void)
   display.clearDisplay();
   drawTimePanel(false);
   display.setCursor(RIGHT_PANEL_X, 0);
-  display.print(F("PROFILES"));
+  display.print(FPSTR(TEXT_PROFILES));
   display.setTextSize(2);
   display.setCursor(RIGHT_PANEL_X, 12);
   display.print(F("SAVED"));
@@ -2343,12 +3012,12 @@ static void drawDiagnosticsScreen(void)
   display.print(F("TEMP:"));
   display.print(sensors.getDeviceCount());
   display.print(F(" CUR:"));
-  display.print(CurrentSensorPresent ? F("Y") : F("N"));
+  display.write(CurrentSensorPresent ? 'Y' : 'N');
   display.setCursor(RIGHT_PANEL_X,16);
   drawResetDiagnostics();
   display.setCursor(RIGHT_PANEL_X,24);
   display.setTextColor(BLACK, WHITE);
-  display.print(F("BACK >"));
+  display.print(FPSTR(TEXT_BACK_ITEM));
   display.setTextColor(WHITE);
   display.drawLine(54,0,54,32,WHITE);
   display.display();
@@ -2381,9 +3050,9 @@ static void drawInfoScreen(void)
   if(g_RunSafety.baselineCurrentCycles >= LOW_CURRENT_BASELINE_CYCLES)
   {
     display.print(g_RunSafety.baselineCurrent_ma/1000, DEC);
-    display.print(F("."));
+    display.write('.');
     display.print((g_RunSafety.baselineCurrent_ma%1000)/100, DEC);
-    display.print(F("A"));
+    display.write('A');
   }
   else
   {
@@ -2396,9 +3065,9 @@ static void drawInfoScreen(void)
     display.setCursor(RIGHT_PANEL_X, 24 - (g_InfoScreenScroll * 8));
     display.print(F("5V: "));
     display.print(g_SupplyVoltage_mv/1000, DEC);
-    display.print(F("."));
+    display.write('.');
     display.print((g_SupplyVoltage_mv%1000)/100, DEC);
-    display.print(F("V"));
+    display.write('V');
   }
 
   if(g_InfoScreenScroll > 1)
@@ -2409,7 +3078,7 @@ static void drawInfoScreen(void)
   }
   display.setCursor(RIGHT_PANEL_X,24);
   display.setTextColor(BLACK, WHITE);
-  display.print(F("BACK >"));
+  display.print(FPSTR(TEXT_BACK_ITEM));
   display.setTextColor(WHITE);
   display.drawLine(54,0,54,32,WHITE);
   display.display();
@@ -2425,49 +3094,49 @@ static void drawResetDiagnostics(void)
   display.print(F("RST:"));
   if(g_ResetDiagnostics.resetFlags & _BV(WDRF))
   {
-    display.print(F("W"));
+    display.write('W');
   }
   else if(g_ResetDiagnostics.resetFlags & _BV(BORF))
   {
-    display.print(F("B"));
+    display.write('B');
   }
   else if(g_ResetDiagnostics.resetFlags & _BV(EXTRF))
   {
-    display.print(F("E"));
+    display.write('E');
   }
   else if(g_ResetDiagnostics.resetFlags & _BV(PORF))
   {
-    display.print(F("P"));
+    display.write('P');
   }
   else
   {
-    display.print(F("-"));
+    display.write('-');
   }
 
-  display.print(F("|"));
+  display.write('|');
   if(g_ResetDiagnostics.previousSystemState == STATE_ANNEALING)
   {
-    display.print(F("A"));
+    display.write('A');
   }
   else if(g_ResetDiagnostics.previousSystemState == STATE_DROPPING)
   {
-    display.print(F("D"));
+    display.write('D');
   }
   else if(g_ResetDiagnostics.previousSystemState == STATE_RELOADING)
   {
-    display.print(F("R"));
+    display.write('R');
   }
   else if(g_ResetDiagnostics.previousSystemState == STATE_COOLDOWN)
   {
-    display.print(F("C"));
+    display.write('C');
   }
   else if(g_ResetDiagnostics.previousSystemState == STATE_STOPPED)
   {
-    display.print(F("S"));
+    display.write('S');
   }
   else
   {
-    display.print(F("?"));
+    display.write('?');
   }
 }
 
@@ -2806,9 +3475,9 @@ static uint16_t getStepsFromHome(void)
 /*---------------------------------------------------------------------------*/
 /*! @brief      is case feeder still moving?
 *//*-------------------------------------------------------------------------*/
-static float readTemperature(uint8_t index)
+static int16_t readTemperature(void)
 {
-  float t = sensors.getTempCByIndex(index);
+  int16_t t = NumberDallasTempDevices ? sensors.getTemp(tempDeviceAddress) : DEVICE_DISCONNECTED_RAW;
   sensors.requestTemperatures(); // this takes quite some time to complete ~90ms or longer. read it on the next loop
   return t;
 }
@@ -2816,7 +3485,9 @@ static float readTemperature(uint8_t index)
 /*---------------------------------------------------------------------------*/
 /*! @brief      Check whether a DS18B20 temperature reading is valid.
 *//*-------------------------------------------------------------------------*/
-static bool isTemperatureReadingValid(float const temperature)
+static bool isTemperatureReadingValid(int16_t const temperature)
 {
-  return temperature >= TEMP_SENSOR_MIN_C && temperature <= TEMP_SENSOR_MAX_C;
+  // DEVICE_DISCONNECTED_RAW is the same numeric value as -55 C, and the
+  // library's Celsius conversion also treats it as invalid.
+  return temperature > TEMP_SENSOR_MIN_RAW && temperature <= TEMP_SENSOR_MAX_RAW;
 }

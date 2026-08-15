@@ -1,47 +1,95 @@
-<circuit version="1.1.0-SR2" rev="2229" stepSize="1000000" stepsPS="1000000" NLsteps="100000" reaStep="1000000" animate="1" >
+<circuit version="1.1.0-SR2" rev="260312" stepSize="1000000" stepsPS="1000000" NLsteps="100000" reaStep="1000000" animate="1" >
+
 <item itemtype="Subcircuit" CircId="Uno-1" mainComp="false" Show_id="true" Show_Val="false" Pos="-60,-120" rotation="0" hflip="1" vflip="1" label="NZHS Annealer Uno" idLabPos="-58,214" labelrot="0" valLabPos="-16,20" valLabRot="0" Logic_Symbol="false">
-<mainCompProps MainCompId="mega328-109" Frequency="16 MHz" Program="../NZHS_ANNEALER_128x32_OLED/NZHS_ANNEALER_128x32_OLED.ino.standard.hex" Auto_Load="false" saveEepr="true" SerialMon="-1" />
+<mainCompProps MainCompId="mega328-109" Frequency="16 MHz" Program="../NZHS_ANNEALER_128x32_OLED/NZHS_ANNEALER_128x32_OLED.ino.standard.hex" Auto_Load="false" saveEepr="true" MainMcu="true" eeprom="20,0,164,0,60," SerialMon="-1" />
 </item>
-<item itemtype="Ssd1306" CircId="Ssd1306-1" mainComp="false" Show_id="true" Show_Val="false" Pos="236,-172" rotation="0" hflip="1" vflip="1" label="OLED 128x32" idLabPos="-42,-42" labelrot="0" valLabPos="-16,20" valLabRot="0" Color="White" Width="128 _Px" Height="32 _Px" Rotate="true" Control_Code="60" Frequency="200 _KHz" />
-<item itemtype="DS18B20" CircId="DS18B20-1" mainComp="false" Show_id="true" Show_Val="false" Pos="-124,164" rotation="0" hflip="1" vflip="1" label="CASE TEMP (D8)" idLabPos="-34,-26" labelrot="0" valLabPos="-16,20" valLabRot="0" Temp="50" TempInc="1.0" />
+
+<item itemtype="SerialTerm" CircId="SerialTerm-1" mainComp="false" Show_id="true" Show_Val="false" Pos="248,8" rotation="0" hflip="-1" vflip="1" label="ANALYSIS SERIAL (115200)" idLabPos="-65.894,-48.1639" labelrot="0" valLabPos="-16,20" valLabRot="0" Baudrate="115200 _Bd" DataBits="8 _bits" StopBits="1 _bits" SerialMon="true" />
+
+<item itemtype="Ssd1306" CircId="Ssd1306-1" mainComp="false" Show_id="true" Show_Val="false" Pos="236,-172" rotation="0" hflip="1" vflip="1" label="OLED 128x32" idLabPos="-42,-42" labelrot="0" valLabPos="-16,20" valLabRot="0" Color="White" Width="128 _px" Height="32 _px" Rotate="true" Control_Code="60" Frequency="200 _kHz" />
+
+<item itemtype="DS18B20" CircId="DS18B20-1" mainComp="false" Show_id="true" Show_Val="false" Pos="-124,164" rotation="0" hflip="1" vflip="1" label="CASE TEMP (D8)" idLabPos="-34,-26" labelrot="0" valLabPos="-16,20" valLabRot="0" ROM="28 BC DE 97 03 00 00 1B " Temp="50 °C" TempInc="1 °C" />
+
 <item itemtype="Rail" CircId="Rail-1" mainComp="false" ShowProp="Voltage" Show_id="true" Show_Val="true" Pos="-124,188" rotation="90" hflip="1" vflip="1" label="5V" idLabPos="-12,-18" labelrot="0" valLabPos="-12,6" valLabRot="-90" Voltage="5 V" />
-<item itemtype="Resistor" CircId="Resistor-1" mainComp="false" ShowProp="Resistance" Show_id="true" Show_Val="false" Pos="-124,220" rotation="90" hflip="1" vflip="1" label="4.7k PULL-UP" idLabPos="-32,38" labelrot="0" valLabPos="18,8" valLabRot="-90" Resistance="4.7 kΩ" />
-<item itemtype="Node" CircId="Node-1" mainComp="false" Pos="-160,236" />
+
+<item itemtype="Resistor" CircId="Resistor-1" mainComp="false" Show_id="true" Show_Val="false" Pos="-124,220" rotation="90" hflip="1" vflip="1" label="4.7k PULL-UP" idLabPos="-32,38" labelrot="0" valLabPos="18,8" valLabRot="-90" Resistance="4.7 kΩ" />
+
 <item itemtype="Push" CircId="Push-1" mainComp="false" Show_id="true" Show_Val="false" Pos="-316,-356" rotation="0" hflip="1" vflip="1" label="START (D2)" idLabPos="-28,-38" labelrot="0" valLabPos="0,0" valLabRot="0" Norm_Close="false" Poles="1" />
+
 <item itemtype="Push" CircId="Push-2" mainComp="false" Show_id="true" Show_Val="false" Pos="-316,-292" rotation="0" hflip="1" vflip="1" label="MODE (D3)" idLabPos="-28,-38" labelrot="0" valLabPos="0,0" valLabRot="0" Norm_Close="false" Poles="1" />
+
 <item itemtype="Push" CircId="Push-3" mainComp="false" Show_id="true" Show_Val="false" Pos="-316,-228" rotation="0" hflip="1" vflip="1" label="UP (A2)" idLabPos="-24,-38" labelrot="0" valLabPos="0,0" valLabRot="0" Norm_Close="false" Poles="1" />
+
 <item itemtype="Potentiometer" CircId="Potentiometer-1" mainComp="false" ShowProp="Resistance" Show_id="true" Show_Val="true" Pos="-252,180" rotation="0" hflip="1" vflip="1" label="CURRENT 0-12.5A (A0)" idLabPos="-52,-36" labelrot="0" valLabPos="-16,20" valLabRot="0" Resistance="10 kΩ" Value_Ohm="5000 Ω" Slider="false" Scale="1" />
-<item itemtype="Resistor" CircId="Resistor-2" mainComp="false" ShowProp="Resistance" Show_id="true" Show_Val="false" Pos="-220,156" rotation="90" hflip="1" vflip="1" label="10k RANGE" idLabPos="-38,8" labelrot="0" valLabPos="18,8" valLabRot="-90" Resistance="10 kΩ" />
+
+<item itemtype="Resistor" CircId="Resistor-2" mainComp="false" Show_id="true" Show_Val="false" Pos="-220,156" rotation="90" hflip="1" vflip="1" label="10k RANGE" idLabPos="-38,8" labelrot="0" valLabPos="18,8" valLabRot="-90" Resistance="10 kΩ" />
+
 <item itemtype="Ground" CircId="Ground-1" mainComp="false" Show_id="false" Show_Val="false" Pos="-348,-340" rotation="-90" hflip="1" vflip="1" label="Ground" idLabPos="-16,8" labelrot="0" valLabPos="-16,20" valLabRot="0" />
+
 <item itemtype="Ground" CircId="Ground-2" mainComp="false" Show_id="false" Show_Val="false" Pos="-348,-276" rotation="-90" hflip="1" vflip="1" label="Ground" idLabPos="-16,8" labelrot="0" valLabPos="-16,20" valLabRot="0" />
+
 <item itemtype="Ground" CircId="Ground-3" mainComp="false" Show_id="false" Show_Val="false" Pos="-348,-212" rotation="-90" hflip="1" vflip="1" label="Ground" idLabPos="-16,8" labelrot="0" valLabPos="-16,20" valLabRot="0" />
+
 <item itemtype="Ground" CircId="Ground-4" mainComp="false" Show_id="false" Show_Val="false" Pos="-268,212" rotation="0" hflip="1" vflip="1" label="Ground" idLabPos="-16,8" labelrot="0" valLabPos="-16,20" valLabRot="0" />
+
 <item itemtype="Led" CircId="Led-1" mainComp="false" Show_id="true" Show_Val="false" Pos="8,196" rotation="0" hflip="1" vflip="1" label="ANNEAL D6" idLabPos="-28,-24" labelrot="0" valLabPos="0,0" valLabRot="0" Color="Red" Grounded="true" Threshold="2.4 V" MaxCurrent="0.03 A" Resistance="100 Ω" />
+
 <item itemtype="Led" CircId="Led-2" mainComp="false" Show_id="true" Show_Val="false" Pos="96,196" rotation="0" hflip="1" vflip="1" label="FAN D7" idLabPos="-20,-24" labelrot="0" valLabPos="0,0" valLabRot="0" Color="Yellow" Grounded="true" Threshold="2.4 V" MaxCurrent="0.03 A" Resistance="100 Ω" />
+
 <item itemtype="Led" CircId="Led-3" mainComp="false" Show_id="true" Show_Val="false" Pos="184,196" rotation="0" hflip="1" vflip="1" label="GATE D10" idLabPos="-24,-24" labelrot="0" valLabPos="0,0" valLabRot="0" Color="Green" Grounded="true" Threshold="2.4 V" MaxCurrent="0.03 A" Resistance="100 Ω" />
-<item itemtype="Led" CircId="Led-4" mainComp="false" Show_id="true" Show_Val="false" Pos="-412,116" rotation="0" hflip="1" vflip="1" label="FEED EN D5 (LOW=RUN)" idLabPos="-56,-24" labelrot="0" valLabPos="0,0" valLabRot="0" Color="Blue" Grounded="true" Threshold="2.4 V" MaxCurrent="0.03 A" Resistance="100 Ω" />
+
+<item itemtype="Led" CircId="Led-4" mainComp="false" Show_id="true" Show_Val="false" Pos="-412,116" rotation="0" hflip="1" vflip="1" label="FEED EN D5 (LOW&#x3DRUN)" idLabPos="-56,-24" labelrot="0" valLabPos="0,0" valLabRot="0" Color="Blue" Grounded="true" Threshold="2.4 V" MaxCurrent="0.03 A" Resistance="100 Ω" />
+
 <item itemtype="Led" CircId="Led-5" mainComp="false" Show_id="true" Show_Val="false" Pos="-412,156" rotation="0" hflip="1" vflip="1" label="FEED DIR D13" idLabPos="-40,-24" labelrot="0" valLabPos="0,0" valLabRot="0" Color="Yellow" Grounded="true" Threshold="2.4 V" MaxCurrent="0.03 A" Resistance="100 Ω" />
+
 <item itemtype="Led" CircId="Led-6" mainComp="false" Show_id="true" Show_Val="false" Pos="-412,196" rotation="0" hflip="1" vflip="1" label="FEED STEP D12" idLabPos="-44,-24" labelrot="0" valLabPos="0,0" valLabRot="0" Color="Green" Grounded="true" Threshold="2.4 V" MaxCurrent="0.03 A" Resistance="100 Ω" />
-<item itemtype="Connector" uid="Connector-1" startpinid="Uno-1-A5" endpinid="Ssd1306-1-PinSck" pointList="92,-104,188,-104,188,-124" />
-<item itemtype="Connector" uid="Connector-2" startpinid="Uno-1-A4" endpinid="Ssd1306-1-PinSda" pointList="92,-96,196,-96,196,-116" />
+
+<item itemtype="Node" CircId="Node-1" mainComp="false" Pos="-160,236" />
+
+<item itemtype="Connector" uid="Connector-1" startpinid="Uno-1-A5" endpinid="Ssd1306-1-PinSck" pointList="92,-104,188,-104,188,-140" />
+
+<item itemtype="Connector" uid="Connector-2" startpinid="Uno-1-A4" endpinid="Ssd1306-1-PinSda" pointList="92,-96,196,-96,196,-140" />
+
 <item itemtype="Connector" uid="Connector-9" startpinid="DS18B20-1-inPin" endpinid="Node-1-0" pointList="-160,172,-160,236" />
-<item itemtype="Connector" uid="Connector-16" startpinid="Node-1-1" endpinid="Uno-1-8" pointList="-160,236,-176,236,-176,-92,-92,-92" />
+
+<item itemtype="Connector" uid="Connector-16" startpinid="Node-1-1" endpinid="Uno-1-8" pointList="-160,236,-176,236,-176,-32,-52,-32" />
+
 <item itemtype="Connector" uid="Connector-17" startpinid="Rail-1-outnod" endpinid="Resistor-1-lPin" pointList="-124,204,-124,204" />
+
 <item itemtype="Connector" uid="Connector-18" startpinid="Resistor-1-rPin" endpinid="Node-1-2" pointList="-124,236,-160,236" />
-<item itemtype="Connector" uid="Connector-3" startpinid="Push-1-switch0pinN" endpinid="Uno-1-2" pointList="-300,-356,-164,-356,-164,-140,-92,-140" />
-<item itemtype="Connector" uid="Connector-4" startpinid="Ground-1-Gnd" endpinid="Push-1-pinP0" pointList="-348,-356,-332,-356" />
-<item itemtype="Connector" uid="Connector-5" startpinid="Push-2-switch0pinN" endpinid="Uno-1-3" pointList="-300,-292,-148,-292,-148,-132,-92,-132" />
-<item itemtype="Connector" uid="Connector-6" startpinid="Ground-2-Gnd" endpinid="Push-2-pinP0" pointList="-348,-292,-332,-292" />
-<item itemtype="Connector" uid="Connector-7" startpinid="Push-3-switch0pinN" endpinid="Uno-1-A2" pointList="-300,-228,-116,-228,-116,-84,-92,-84" />
-<item itemtype="Connector" uid="Connector-8" startpinid="Ground-3-Gnd" endpinid="Push-3-pinP0" pointList="-348,-228,-332,-228" />
+
+<item itemtype="Connector" uid="Connector-3" startpinid="Push-1-switch0pinN" endpinid="Uno-1-2" pointList="-300,-356,-164,-356,-164,-88,-52,-88" />
+
+<item itemtype="Connector" uid="Connector-4" startpinid="Ground-1-Gnd" endpinid="Push-1-pinP0" pointList="-364,-340,-332,-340,-332,-356" />
+
+<item itemtype="Connector" uid="Connector-5" startpinid="Push-2-switch0pinN" endpinid="Uno-1-3" pointList="-300,-292,-148,-292,-148,-80,-52,-80" />
+
+<item itemtype="Connector" uid="Connector-6" startpinid="Ground-2-Gnd" endpinid="Push-2-pinP0" pointList="-364,-276,-332,-276,-332,-292" />
+
+<item itemtype="Connector" uid="Connector-7" startpinid="Push-3-switch0pinN" endpinid="Uno-1-A2" pointList="-300,-228,-116,-228,-116,-80,92,-80" />
+
+<item itemtype="Connector" uid="Connector-8" startpinid="Ground-3-Gnd" endpinid="Push-3-pinP0" pointList="-364,-212,-332,-212,-332,-228" />
+
 <item itemtype="Connector" uid="Connector-10" startpinid="Potentiometer-1-PinA" endpinid="Ground-4-Gnd" pointList="-268,180,-268,196" />
-<item itemtype="Connector" uid="Connector-11" startpinid="Uno-1-5V0" endpinid="Resistor-2-lPin" pointList="-92,-24,-220,-24,-220,140" />
+
+<item itemtype="Connector" uid="Connector-11" startpinid="Uno-1-5V0" endpinid="Resistor-2-lPin" pointList="92,-24,-220,-24,-220,140" />
+
 <item itemtype="Connector" uid="Connector-22" startpinid="Resistor-2-rPin" endpinid="Potentiometer-1-PinB" pointList="-220,172,-220,180,-236,180" />
-<item itemtype="Connector" uid="Connector-12" startpinid="Potentiometer-1-PinM" endpinid="Uno-1-A0" pointList="-252,196,-236,196,-236,244,-300,244,-300,-100,-92,-100" />
-<item itemtype="Connector" uid="Connector-13" startpinid="Uno-1-6" endpinid="Led-1-lPin" pointList="92,-108,8,-108,8,180" />
-<item itemtype="Connector" uid="Connector-14" startpinid="Uno-1-7" endpinid="Led-2-lPin" pointList="92,-116,96,-116,96,180" />
-<item itemtype="Connector" uid="Connector-15" startpinid="Uno-1-10" endpinid="Led-3-lPin" pointList="92,-140,184,-140,184,180" />
-<item itemtype="Connector" uid="Connector-19" startpinid="Uno-1-5" endpinid="Led-4-lPin" pointList="-92,-116,-380,-116,-380,116,-396,116" />
-<item itemtype="Connector" uid="Connector-20" startpinid="Uno-1-13" endpinid="Led-5-lPin" pointList="-92,-180,-364,-180,-364,156,-396,156" />
-<item itemtype="Connector" uid="Connector-21" startpinid="Uno-1-12" endpinid="Led-6-lPin" pointList="-92,-172,-348,-172,-348,196,-396,196" />
+
+<item itemtype="Connector" uid="Connector-12" startpinid="Potentiometer-1-PinM" endpinid="Uno-1-A0" pointList="-252,196,-236,196,-236,244,-300,244,-300,-64,92,-64" />
+
+<item itemtype="Connector" uid="Connector-13" startpinid="Uno-1-6" endpinid="Led-1-lPin" pointList="-52,-56,-8,-56,-8,196" />
+
+<item itemtype="Connector" uid="Connector-14" startpinid="Uno-1-7" endpinid="Led-2-lPin" pointList="-52,-48,80,-48,80,196" />
+
+<item itemtype="Connector" uid="Connector-15" startpinid="Uno-1-10" endpinid="Led-3-lPin" pointList="-52,-16,168,-16,168,196" />
+
+<item itemtype="Connector" uid="Connector-19" startpinid="Uno-1-5" endpinid="Led-4-lPin" pointList="-52,-64,-380,-64,-380,116,-428,116" />
+
+<item itemtype="Connector" uid="Connector-20" startpinid="Uno-1-13" endpinid="Led-5-lPin" pointList="-52,8,-364,8,-364,156,-428,156" />
+
+<item itemtype="Connector" uid="Connector-21" startpinid="Uno-1-12" endpinid="Led-6-lPin" pointList="-52,0,-348,0,-348,196,-428,196" />
+
+<item itemtype="Connector" uid="Connector-23" startpinid="Uno-1-1" endpinid="SerialTerm-1-pin1" pointList="-52,-96,-52,40,272,40,272,16" />
+
 </circuit>
