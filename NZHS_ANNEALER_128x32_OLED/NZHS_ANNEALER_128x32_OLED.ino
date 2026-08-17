@@ -56,6 +56,8 @@
 #define ANALYSIS_ABORT_HOLD_MS 300UL
 #define ANALYSIS_SUPPLY_VOLTAGE_V 48UL
 #define ANALYSIS_GRAPH_MAX_CURRENT_MA 12500UL
+#define ANALYSIS_GRAPH_CURRENT_STEP_MA 50U
+#define ANALYSIS_GRAPH_MAX_SAMPLE (ANALYSIS_GRAPH_MAX_CURRENT_MA / ANALYSIS_GRAPH_CURRENT_STEP_MA)
 #define ANALYSIS_PEAK_CONFIRM_SAMPLES 3
 #define ANALYSIS_DEFAULT_PEAK_DROP_PERCENT 10
 #define ANALYSIS_MAX_ENERGY_J 9999
@@ -95,6 +97,7 @@
 #define EEPROM_DUMP_BUTTON_MAGIC 0x3C
 #define EEPROM_ADDRESS_PROFILE_BASE 16
 #define EEPROM_ADDRESS_PROFILE_RULE_BASE 160
+#define EEPROM_ADDRESS_PROFILE_REFERENCE_BASE 192
 #define PROFILE_COUNT 8
 #define PROFILE_NAME_LENGTH 10
 #define PROFILE_MAGIC 0xC7
@@ -102,7 +105,16 @@
 #define PROFILE_FLAG_DUMP_BUTTON 0x02
 #define PROFILE_FLAG_STOP_TYPE_SHIFT 2
 #define PROFILE_FLAG_STOP_TYPE_MASK 0x0C
-#define PROFILE_SAVE_NOTICE_PERIOD 1000
+#define PROFILE_REFERENCE_SAMPLE_COUNT 64
+#define PROFILE_REFERENCE_MAGIC 0xD6
+#define PROFILE_REFERENCE_SAMPLE_OFFSET 1
+#define PROFILE_REFERENCE_PEAK_OFFSET 65
+#define PROFILE_REFERENCE_ENERGY_OFFSET 67
+#define PROFILE_REFERENCE_DURATION_OFFSET 69
+#define PROFILE_REFERENCE_CHECKSUM_OFFSET 71
+#define PROFILE_REFERENCE_RECORD_SIZE 72
+#define ARDUINO_UNO_EEPROM_SIZE 1024
+#define PROFILE_NOTICE_PERIOD 1000
 #define RIGHT_PANEL_X 56
 #define ANALYSIS_ENERGY_X 92
 
@@ -127,6 +139,7 @@ static const char TEXT_DIAGNOSTICS_ITEM[] PROGMEM = "DIAGNOSTICS>";
 static const char TEXT_BACK_ITEM[] PROGMEM = "BACK >";
 static const char TEXT_SAVE_ITEM[] PROGMEM = "SAVE >";
 static const char TEXT_LOAD_ITEM[] PROGMEM = "LOAD >";
+static const char TEXT_PERFORMANCE_ITEM[] PROGMEM = "PERFORMANCE >";
 static const char TEXT_RENAME_ITEM[] PROGMEM = "RENAME >";
 static const char TEXT_DELETE_ITEM[] PROGMEM = "DELETE >";
 static const char TEXT_NEW_ITEM[] PROGMEM = "NEW >";
@@ -136,7 +149,8 @@ static const char TEXT_ON[] PROGMEM = "ON";
 static const char TEXT_OFF[] PROGMEM = "OFF";
 static const char TEXT_INPUT_ENERGY[] PROGMEM = ",input_energy_J=";
 static const char * const PROFILE_ACTION_TEXT[] PROGMEM = {
-  TEXT_LOAD_ITEM, TEXT_SAVE_ITEM, TEXT_RENAME_ITEM, TEXT_DELETE_ITEM, TEXT_BACK_ITEM
+  TEXT_LOAD_ITEM, TEXT_SAVE_ITEM, TEXT_RENAME_ITEM, TEXT_DELETE_ITEM,
+  TEXT_PERFORMANCE_ITEM, TEXT_BACK_ITEM
 };
 static const char * const STOPPED_MENU_TEXT[] PROGMEM = {
   TEXT_SETTINGS_ITEM, TEXT_PROFILES_ITEM, TEXT_ANALYSE_ITEM, TEXT_INFO_ITEM,
@@ -472,9 +486,10 @@ typedef enum tStateMachineStates : uint8_t
   STATE_SETTINGS,
   STATE_PROFILES,
   STATE_PROFILE_ACTIONS,
+  STATE_PROFILE_PERFORMANCE,
   STATE_PROFILE_NAME_EDIT,
   STATE_PROFILE_DELETE_CONFIRM,
-  STATE_PROFILE_SAVED,
+  STATE_PROFILE_NOTICE,
   STATE_ANALYSIS_LOAD,
   STATE_ANALYSING,
   STATE_ANALYSIS_GATE_OPEN,
@@ -555,9 +570,27 @@ typedef enum tProfileActionSelection : uint8_t
   PROFILE_ACTION_SAVE,
   PROFILE_ACTION_RENAME,
   PROFILE_ACTION_DELETE,
+  PROFILE_ACTION_PERFORMANCE,
   PROFILE_ACTION_BACK,
   PROFILE_ACTION_SELECTION_COUNT,
 } tProfileActionSelection;
+
+typedef enum tProfileNotice : uint8_t
+{
+  PROFILE_NOTICE_SAVED = 0,
+  PROFILE_NOTICE_LOADED,
+  PROFILE_NOTICE_DELETED,
+  PROFILE_NOTICE_EMPTY,
+  PROFILE_NOTICE_NO_DATA,
+} tProfileNotice;
+
+typedef enum tPerformanceFooter : uint8_t
+{
+  PERFORMANCE_FOOTER_LIVE = 0,
+  PERFORMANCE_FOOTER_REVIEW,
+  PERFORMANCE_FOOTER_DROP,
+  PERFORMANCE_FOOTER_NEXT,
+} tPerformanceFooter;
 
 typedef struct tUserSettings
 {
@@ -589,6 +622,12 @@ typedef struct __attribute__((packed)) tCartridgeProfile
 static_assert(EEPROM_ADDRESS_PROFILE_BASE + (PROFILE_COUNT * sizeof(tCartridgeProfile)) <=
               EEPROM_ADDRESS_PROFILE_RULE_BASE,
               "Profile stop rules overlap cartridge profiles");
+static_assert(EEPROM_ADDRESS_PROFILE_RULE_BASE + (PROFILE_COUNT * 3) <=
+              EEPROM_ADDRESS_PROFILE_REFERENCE_BASE,
+              "Profile references overlap profile stop rules");
+static_assert(EEPROM_ADDRESS_PROFILE_REFERENCE_BASE +
+              (PROFILE_COUNT * PROFILE_REFERENCE_RECORD_SIZE) <= ARDUINO_UNO_EEPROM_SIZE,
+              "Profile references exceed Arduino Uno EEPROM");
 
 typedef struct tRunSafetyState
 {
@@ -620,9 +659,9 @@ typedef struct tAnalysisState
   uint16_t graphCurrentTotal_ma;
   uint16_t graphCurrent_ma;
   uint8_t graphCurrentSamples;
-  uint8_t graphHeight;
-  uint8_t graphHeights[ANALYSIS_GRAPH_COLUMNS];
+  uint8_t graphSamples[ANALYSIS_GRAPH_COLUMNS];
   bool graphValid;
+  bool graphIsAnalysis;
 } tAnalysisState;
 
 typedef struct tAnalysisConfigState
@@ -643,6 +682,21 @@ typedef struct tAdaptiveAnnealState
   uint16_t peakCurrent_ma;
   uint8_t belowPeakSamples;
 } tAdaptiveAnnealState;
+
+typedef struct tCasePerformanceState
+{
+  uint32_t errorTotal;
+  uint32_t referenceTotal;
+  uint32_t referenceEnergy_mJ;
+  uint16_t referencePeakCurrent_ma;
+  uint16_t energyPercent;
+  uint16_t peakPercent;
+  uint8_t referenceSlot;
+  uint8_t resultSlot;
+  uint8_t matchPercent;
+  bool referenceValid;
+  bool currentCycleCompared;
+} tCasePerformanceState;
 
 typedef struct tResetDiagnostics
 {
@@ -872,8 +926,10 @@ static ModeList CurrentMode = MODE_SINGLE_SHOT;
 static tUserSettings g_UserSettings;
 static tRunSafetyState g_RunSafety;
 static tCartridgeProfile g_ProfileEditor;
+static tProfileNotice g_ProfileNotice = PROFILE_NOTICE_SAVED;
 static tAnalysisConfigState g_AnalysisConfig;
 static tAdaptiveAnnealState g_AdaptiveAnneal;
+static tCasePerformanceState g_CasePerformance;
 static uint8_t g_InfoScreenScroll = 0;
 static uint16_t g_SupplyVoltage_mv = 0;
 static uint32_t g_SupplyVoltageSampleTime = 0;
@@ -943,6 +999,11 @@ static void showSavedAnalysis(void);
 static void beginAnalysisConfig(void);
 static inline void updateAnalysisConfig(bool const rapidTimeAdjust) __attribute__((always_inline));
 static void saveAnalysisConfigToProfile(uint8_t const slot);
+static void resetGraphCapture(uint32_t const currentTime, bool const isAnalysis);
+static uint16_t recordGraphCurrent(uint16_t const current_ma, uint32_t const currentTime);
+static void beginCasePerformance(uint32_t const currentTime);
+static void recordCasePerformance(uint16_t const current_ma, uint32_t const currentTime);
+static void finishCasePerformance(void);
 static void drawAnalysisMenuScreen(void);
 static void drawAnalysisConfigScreen(void);
 static void setTextSelected(bool const selected) __attribute__((noinline));
@@ -950,6 +1011,8 @@ static void beginFullWidthScreen(void) __attribute__((noinline));
 static void drawAnalysisLoadScreen(void);
 static void drawAnalysisGraph(void);
 static void drawAnalysisStatus(bool const dumping);
+static void drawCasePerformanceGraph(tPerformanceFooter const footer,
+                                     uint16_t const remainingTime_ms);
 static void printAnalysisEnergy_J(uint32_t const energy_mJ);
 static void setFreeRunMode(void);
 static void setDumpButtonEnabled(bool const enabled);
@@ -964,6 +1027,12 @@ static void saveProfile(uint8_t const slot, tCartridgeProfile const * const prof
 static void loadProfileStopRule(uint8_t const slot);
 static void saveProfileStopRule(uint8_t const slot, uint16_t const targetEnergy_J,
                                 uint8_t const peakDropPercent);
+static uint16_t getProfileReferenceAddress(uint8_t const slot);
+static uint8_t readProfileReferenceSample(uint8_t const slot, uint8_t const sample);
+static bool isProfileReferenceValid(uint8_t const slot);
+static void activateProfileReference(uint8_t const slot);
+static void saveProfileReference(uint8_t const slot);
+static void clearProfileReference(uint8_t const slot);
 static void clearProfile(uint8_t const slot);
 static void makeDefaultProfile(uint8_t const slot, tCartridgeProfile * const profile);
 static void applyProfile(tCartridgeProfile const * const profile);
@@ -982,9 +1051,11 @@ static void drawStoppedScreen(bool const fanIsOn, int16_t const temperature, uin
 static void drawSettingsScreen(void);
 static void drawProfilesScreen(void);
 static void drawProfileActionsScreen(void);
+static void drawProfilePerformanceScreen(void);
+static void drawProfileReferenceScreen(void);
 static void drawProfileNameEditScreen(void);
 static void drawProfileDeleteConfirmScreen(void);
-static void drawProfileSavedScreen(void);
+static void drawProfileNoticeScreen(void);
 static void drawDiagnosticsScreen(void);
 static void drawInfoScreen(void);
 static void drawResetDiagnostics(void);
@@ -1259,7 +1330,9 @@ void loop()
 
   // DS18B20 conversion takes longer than the 25 ms analysis sampler.
   if(g_SystemState != STATE_ANALYSING &&
-     !(g_SystemState == STATE_ANNEALING && g_UserSettings.stopType != PROFILE_STOP_TIME))
+     !(g_SystemState == STATE_ANNEALING &&
+       (g_UserSettings.stopType != PROFILE_STOP_TIME ||
+        (g_CasePerformance.referenceValid && CurrentSensorPresent))))
   {
     temperature = readTemperature();
   }
@@ -1336,9 +1409,10 @@ void loop()
     else if(g_SystemState == STATE_SETTINGS ||
             g_SystemState == STATE_PROFILES ||
             g_SystemState == STATE_PROFILE_ACTIONS ||
+            g_SystemState == STATE_PROFILE_PERFORMANCE ||
             g_SystemState == STATE_PROFILE_NAME_EDIT ||
             g_SystemState == STATE_PROFILE_DELETE_CONFIRM ||
-            g_SystemState == STATE_PROFILE_SAVED ||
+            g_SystemState == STATE_PROFILE_NOTICE ||
             g_SystemState == STATE_ANALYSIS_MENU ||
             g_SystemState == STATE_ANALYSIS_CONFIG ||
             g_SystemState == STATE_DIAGNOSTICS ||
@@ -1422,6 +1496,10 @@ void loop()
       {
         advanceProfileActionSelection();
       }
+      else if(g_SystemState == STATE_PROFILE_PERFORMANCE)
+      {
+        // The result screen has one visible BACK > action operated by UP.
+      }
       else if(g_SystemState == STATE_PROFILE_NAME_EDIT)
       {
         g_UserSettings.profileNameCursor = (g_UserSettings.profileNameCursor + 1) % (PROFILE_NAME_LENGTH + 2);
@@ -1429,6 +1507,10 @@ void loop()
       else if(g_SystemState == STATE_PROFILE_DELETE_CONFIRM)
       {
         g_UserSettings.profileDeleteConfirmed = !g_UserSettings.profileDeleteConfirmed;
+      }
+      else if(g_SystemState == STATE_PROFILE_NOTICE)
+      {
+        // Ignore MODE while the brief acknowledgement is visible.
       }
       else if(g_SystemState == STATE_INFO)
       {
@@ -1561,7 +1643,6 @@ void loop()
 
     case STATE_PROFILES:
     {
-      tCartridgeProfile profile;
       updateSystemState(g_SystemState);
       if(upKey && !upKeyPrev)
       {
@@ -1570,7 +1651,8 @@ void loop()
           returnToStoppedScreen();
           break;
         }
-        g_UserSettings.profileActionSelection = loadProfile(g_UserSettings.profileSlot, &profile) ? PROFILE_ACTION_LOAD : PROFILE_ACTION_SAVE;
+        // Every profile opens on LOAD, whether or not the slot is populated.
+        g_UserSettings.profileActionSelection = PROFILE_ACTION_LOAD;
         updateSystemState(STATE_PROFILE_ACTIONS);
         break;
       }
@@ -1589,9 +1671,24 @@ void loop()
           if(loadProfile(g_UserSettings.profileSlot, &profile))
           {
             applyProfile(&profile);
-            // Loading is the one menu action that returns ready to run.
-            g_UserSettings.stoppedScreenSelection = STOPPED_SCREEN_TIME;
-            returnToStoppedScreen();
+            g_ProfileNotice = PROFILE_NOTICE_LOADED;
+          }
+          else
+          {
+            g_ProfileNotice = PROFILE_NOTICE_EMPTY;
+          }
+          updateSystemState(STATE_PROFILE_NOTICE);
+        }
+        else if(g_UserSettings.profileActionSelection == PROFILE_ACTION_PERFORMANCE)
+        {
+          if(isProfileReferenceValid(g_UserSettings.profileSlot))
+          {
+            updateSystemState(STATE_PROFILE_PERFORMANCE);
+          }
+          else
+          {
+            g_ProfileNotice = PROFILE_NOTICE_NO_DATA;
+            updateSystemState(STATE_PROFILE_NOTICE);
           }
         }
         else if(g_UserSettings.profileActionSelection == PROFILE_ACTION_SAVE)
@@ -1604,7 +1701,8 @@ void loop()
           }
           else
           {
-            updateSystemState(STATE_PROFILE_SAVED);
+            g_ProfileNotice = PROFILE_NOTICE_SAVED;
+            updateSystemState(STATE_PROFILE_NOTICE);
           }
         }
         else if(g_UserSettings.profileActionSelection == PROFILE_ACTION_RENAME)
@@ -1629,6 +1727,18 @@ void loop()
     }
     break;
 
+    case STATE_PROFILE_PERFORMANCE:
+    {
+      updateSystemState(g_SystemState);
+      if(upKey && !upKeyPrev)
+      {
+        updateSystemState(STATE_PROFILE_ACTIONS);
+        break;
+      }
+      drawProfilePerformanceScreen();
+    }
+    break;
+
     case STATE_PROFILE_NAME_EDIT:
     {
       updateSystemState(g_SystemState);
@@ -1643,7 +1753,8 @@ void loop()
         else if(g_UserSettings.profileNameCursor == PROFILE_NAME_LENGTH)
         {
           saveEditedProfileName();
-          updateSystemState(STATE_PROFILE_SAVED);
+          g_ProfileNotice = PROFILE_NOTICE_SAVED;
+          updateSystemState(STATE_PROFILE_NOTICE);
           break;
         }
         else
@@ -1677,7 +1788,8 @@ void loop()
         if(g_UserSettings.profileDeleteConfirmed)
         {
           clearProfile(g_UserSettings.profileSlot);
-          updateSystemState(STATE_PROFILES);
+          g_ProfileNotice = PROFILE_NOTICE_DELETED;
+          updateSystemState(STATE_PROFILE_NOTICE);
         }
         else
         {
@@ -1688,11 +1800,11 @@ void loop()
       drawProfileDeleteConfirmScreen();
     break;
 
-    case STATE_PROFILE_SAVED:
+    case STATE_PROFILE_NOTICE:
     {
       if(hasSystemStateChanged())
       {
-        setSystemTimeTarget(millis() + PROFILE_SAVE_NOTICE_PERIOD);
+        setSystemTimeTarget(millis() + PROFILE_NOTICE_PERIOD);
       }
       updateSystemState(g_SystemState);
       if(hasTimeElapsed(SystemTimeTarget, millis()))
@@ -1700,8 +1812,19 @@ void loop()
         if(g_AnalysisConfig.profileSaveInProgress)
         {
           g_AnalysisConfig.profileSaveInProgress = false;
-          g_UserSettings.analysisMenuSelection = ANALYSIS_MENU_CONFIG;
-          updateSystemState(STATE_ANALYSIS_MENU);
+          g_UserSettings.analysisMenuSelection = ANALYSIS_MENU_NEW;
+          g_UserSettings.profileActionSelection = PROFILE_ACTION_PERFORMANCE;
+          updateSystemState(STATE_PROFILE_ACTIONS);
+        }
+        else if(g_ProfileNotice == PROFILE_NOTICE_LOADED)
+        {
+          // Loading is the one profile action that returns ready to run.
+          g_UserSettings.stoppedScreenSelection = STOPPED_SCREEN_TIME;
+          returnToStoppedScreen();
+        }
+        else if(g_ProfileNotice == PROFILE_NOTICE_NO_DATA)
+        {
+          updateSystemState(STATE_PROFILE_ACTIONS);
         }
         else
         {
@@ -1709,7 +1832,7 @@ void loop()
         }
         break;
       }
-      drawProfileSavedScreen();
+      drawProfileNoticeScreen();
     }
     break;
 
@@ -1760,7 +1883,8 @@ void loop()
       updateSystemState(g_SystemState);
       if(upKey && !upKeyPrev)
       {
-        updateSystemState(g_Analysis.graphValid ? STATE_ANALYSIS_MENU : STATE_STOPPED);
+        updateSystemState(g_Analysis.graphValid && g_Analysis.graphIsAnalysis ?
+                          STATE_ANALYSIS_MENU : STATE_STOPPED);
         break;
       }
       drawAnalysisLoadScreen();
@@ -1840,6 +1964,11 @@ void loop()
           ((uint32_t)g_UserSettings.targetEnergy_J * 2500UL) / 3UL;
         g_AdaptiveAnneal.peakCurrent_ma = 0;
         g_AdaptiveAnneal.belowPeakSamples = 0;
+        g_CasePerformance.currentCycleCompared = false;
+        if(g_CasePerformance.referenceValid && CurrentSensorPresent)
+        {
+          beginCasePerformance(currentTime);
+        }
         targetTimeoutPending = false;
         turnStartStopLedOn();
         turnAnnealerOn();
@@ -1865,6 +1994,11 @@ void loop()
         }
         g_RunSafety.annealingCurrentTotal_ma += psuCurrent_ma;
         g_RunSafety.annealingCurrentSamples++;
+
+        if(g_CasePerformance.referenceValid)
+        {
+          recordCasePerformance(psuCurrent_ma, currentTime);
+        }
 
         if(g_UserSettings.stopType != PROFILE_STOP_TIME)
         {
@@ -1943,6 +2077,10 @@ void loop()
             break;
           }
         }
+        if(g_CasePerformance.referenceValid && CurrentSensorPresent)
+        {
+          finishCasePerformance();
+        }
         g_RunSafety.completedAnnealCycles++;
         openDropGate();
         updateSystemState(STATE_DROPPING);
@@ -1952,6 +2090,16 @@ void loop()
 
       if(!hasTimeElapsed(systemTimeTarget, currentTime))
       {
+        if(g_CasePerformance.referenceValid && CurrentSensorPresent)
+        {
+          if(hasTimeElapsed(g_Analysis.lastGraphDrawTime +
+                            ANALYSIS_GRAPH_REFRESH_MS, currentTime))
+          {
+            drawCasePerformanceGraph(PERFORMANCE_FOOTER_LIVE, 0);
+            g_Analysis.lastGraphDrawTime = currentTime;
+          }
+          break;
+        }
         uint32_t remainingTime = systemTimeTarget - currentTime;
         display.clearDisplay();
         display.setTextSize(2);
@@ -1989,6 +2137,11 @@ void loop()
 
       if (!hasTimeElapsed(SystemTimeTarget, millis())) // wait time is not up, break.
       {
+        if(g_CasePerformance.currentCycleCompared)
+        {
+          drawCasePerformanceGraph(PERFORMANCE_FOOTER_DROP, 0);
+          break;
+        }
         display.clearDisplay();
         display.setTextSize(2);
         display.setCursor(0, 0);
@@ -2082,6 +2235,13 @@ void loop()
       if (!hasTimeElapsed(systemTimeTarget, currentTime))
       {
         uint32_t remainingTime = systemTimeTarget - currentTime;
+        if(CurrentMode == MODE_AUTOMATIC &&
+           g_CasePerformance.currentCycleCompared)
+        {
+          drawCasePerformanceGraph(PERFORMANCE_FOOTER_NEXT,
+                                   remainingTime > UINT16_MAX ? UINT16_MAX : remainingTime);
+          break;
+        }
         display.clearDisplay();
         display.setCursor(0, 0);
         #ifdef SHOW_CASE_COUNT
@@ -2315,7 +2475,9 @@ void loop()
 
   bool const fastCurrentSampling = g_SystemState == STATE_ANALYSING ||
                                    (g_SystemState == STATE_ANNEALING &&
-                                    g_UserSettings.stopType != PROFILE_STOP_TIME);
+                                    (g_UserSettings.stopType != PROFILE_STOP_TIME ||
+                                     (g_CasePerformance.referenceValid &&
+                                      CurrentSensorPresent)));
   uint32_t const loopPeriod = fastCurrentSampling ? ANALYSIS_SAMPLE_PERIOD_MS : LOOP_TIME;
   while(!hasTimeElapsed(LoopStartTime + loopPeriod, millis())) // wait for the loop time to expire
   {
@@ -2489,12 +2651,153 @@ static void saveProfileStopRule(uint8_t const slot, uint16_t const targetEnergy_
 }
 
 /*---------------------------------------------------------------------------*/
+/*! @brief      Return the EEPROM address of a profile's compact reference.
+*//*-------------------------------------------------------------------------*/
+static uint16_t getProfileReferenceAddress(uint8_t const slot)
+{
+  return EEPROM_ADDRESS_PROFILE_REFERENCE_BASE +
+         ((uint16_t)slot * PROFILE_REFERENCE_RECORD_SIZE);
+}
+
+/*---------------------------------------------------------------------------*/
+/*! @brief      Read one 125 ms reference-current sample in 50 mA units.
+*//*-------------------------------------------------------------------------*/
+static uint8_t readProfileReferenceSample(uint8_t const slot, uint8_t const sample)
+{
+  return EEPROM.read(getProfileReferenceAddress(slot) +
+                     PROFILE_REFERENCE_SAMPLE_OFFSET + sample);
+}
+
+/*---------------------------------------------------------------------------*/
+/*! @brief      Validate a reference marker, checksum and aggregate fields.
+*//*-------------------------------------------------------------------------*/
+static bool isProfileReferenceValid(uint8_t const slot)
+{
+  uint8_t checksum = 0;
+  uint16_t const address = getProfileReferenceAddress(slot);
+  if(slot >= PROFILE_COUNT || EEPROM.read(address) != PROFILE_REFERENCE_MAGIC)
+  {
+    return false;
+  }
+  for(uint8_t offset = 1; offset < PROFILE_REFERENCE_CHECKSUM_OFFSET; offset++)
+  {
+    uint8_t const value = EEPROM.read(address + offset);
+    if(offset < PROFILE_REFERENCE_PEAK_OFFSET && value > ANALYSIS_GRAPH_MAX_SAMPLE)
+    {
+      return false;
+    }
+    checksum ^= value;
+  }
+  if(checksum != EEPROM.read(address + PROFILE_REFERENCE_CHECKSUM_OFFSET))
+  {
+    return false;
+  }
+  uint16_t const peakCurrent_ma = EEPROM.read(address + PROFILE_REFERENCE_PEAK_OFFSET) |
+    ((uint16_t)EEPROM.read(address + PROFILE_REFERENCE_PEAK_OFFSET + 1) << 8);
+  uint16_t const energy_J = EEPROM.read(address + PROFILE_REFERENCE_ENERGY_OFFSET) |
+    ((uint16_t)EEPROM.read(address + PROFILE_REFERENCE_ENERGY_OFFSET + 1) << 8);
+  uint16_t const duration_ms = EEPROM.read(address + PROFILE_REFERENCE_DURATION_OFFSET) |
+    ((uint16_t)EEPROM.read(address + PROFILE_REFERENCE_DURATION_OFFSET + 1) << 8);
+  return peakCurrent_ma <= ANALYSIS_GRAPH_MAX_CURRENT_MA &&
+         energy_J <= ANALYSIS_MAX_ENERGY_J &&
+         duration_ms > 0 && duration_ms <= ANALYSIS_DURATION_MS;
+}
+
+/*---------------------------------------------------------------------------*/
+/*! @brief      Select the EEPROM reference belonging to a loaded profile.
+*//*-------------------------------------------------------------------------*/
+static void activateProfileReference(uint8_t const slot)
+{
+  g_CasePerformance.referenceValid = isProfileReferenceValid(slot);
+  if(g_CasePerformance.referenceValid)
+  {
+    g_CasePerformance.referenceSlot = slot;
+  }
+}
+
+/*---------------------------------------------------------------------------*/
+/*! @brief      Save the retained Analyse curve as 64 current samples.
+*//*-------------------------------------------------------------------------*/
+static void saveProfileReference(uint8_t const slot)
+{
+  uint8_t checksum = 0;
+  uint16_t const address = getProfileReferenceAddress(slot);
+  if(slot >= PROFILE_COUNT || !g_Analysis.graphValid || !g_Analysis.graphIsAnalysis)
+  {
+    return;
+  }
+
+  // Invalidate first so interrupted writes cannot create a usable reference.
+  EEPROM.update(address, 0);
+  for(uint8_t sample = 0; sample < PROFILE_REFERENCE_SAMPLE_COUNT; sample++)
+  {
+    uint8_t const firstColumn = sample * 2;
+    uint16_t sampleTotal = 0;
+    uint8_t sampleCount = 0;
+    if(firstColumn <= g_Analysis.graphColumn)
+    {
+      sampleTotal = g_Analysis.graphSamples[firstColumn];
+      sampleCount = 1;
+    }
+    if(firstColumn + 1 <= g_Analysis.graphColumn)
+    {
+      sampleTotal += g_Analysis.graphSamples[firstColumn + 1];
+      sampleCount++;
+    }
+    uint8_t const value = sampleCount ? (sampleTotal + (sampleCount / 2)) / sampleCount : 0;
+    EEPROM.update(address + PROFILE_REFERENCE_SAMPLE_OFFSET + sample, value);
+    checksum ^= value;
+  }
+
+  uint16_t const energy_J = (g_Analysis.inputEnergy_mJ + 500UL) / 1000UL;
+  uint16_t const values[] = {
+    g_Analysis.peakCurrent_ma,
+    energy_J,
+    g_Analysis.elapsedTime_ms
+  };
+  uint8_t const offsets[] = {
+    PROFILE_REFERENCE_PEAK_OFFSET,
+    PROFILE_REFERENCE_ENERGY_OFFSET,
+    PROFILE_REFERENCE_DURATION_OFFSET
+  };
+  for(uint8_t value = 0; value < 3; value++)
+  {
+    uint8_t const lowByte = values[value] & 0xFF;
+    uint8_t const highByte = values[value] >> 8;
+    EEPROM.update(address + offsets[value], lowByte);
+    EEPROM.update(address + offsets[value] + 1, highByte);
+    checksum ^= lowByte;
+    checksum ^= highByte;
+  }
+  EEPROM.update(address + PROFILE_REFERENCE_CHECKSUM_OFFSET, checksum);
+  EEPROM.update(address, PROFILE_REFERENCE_MAGIC);
+}
+
+/*---------------------------------------------------------------------------*/
+/*! @brief      Invalidate one saved reference without wearing its data bytes.
+*//*-------------------------------------------------------------------------*/
+static void clearProfileReference(uint8_t const slot)
+{
+  EEPROM.update(getProfileReferenceAddress(slot), 0);
+  if(g_CasePerformance.referenceValid && g_CasePerformance.referenceSlot == slot)
+  {
+    g_CasePerformance.referenceValid = false;
+  }
+  if(g_Analysis.graphValid && !g_Analysis.graphIsAnalysis &&
+     g_CasePerformance.resultSlot == slot)
+  {
+    g_Analysis.graphValid = false;
+  }
+}
+
+/*---------------------------------------------------------------------------*/
 /*! @brief      Mark a profile slot blank without touching neighbouring slots.
 *//*-------------------------------------------------------------------------*/
 static void clearProfile(uint8_t const slot)
 {
   EEPROM.update(getProfileAddress(slot), 0);
   EEPROM.update(EEPROM_ADDRESS_PROFILE_RULE_BASE + ((uint16_t)slot * 3), 0xFF);
+  clearProfileReference(slot);
 }
 
 /*---------------------------------------------------------------------------*/
@@ -2537,6 +2840,7 @@ static void applyProfile(tCartridgeProfile const * const profile)
     g_UserSettings.stopType = PROFILE_STOP_TIME;
   }
   loadProfileStopRule(g_UserSettings.profileSlot);
+  activateProfileReference(g_UserSettings.profileSlot);
   CurrentMode = (ModeList)profile->mode;
   EEPROM.update(EEPROM_ADDRESS_ANNEAL_TIME, g_UserSettings.annealTime_ms / 100);
   EEPROM.update(EEPROM_ADDRESS_AUTO_RESTART, g_UserSettings.autoRestartAfterCooldown ? 1 : 0);
@@ -2721,7 +3025,7 @@ static void returnToStoppedScreen(void)
 *//*-------------------------------------------------------------------------*/
 static void enterAnalysis(void)
 {
-  if(g_Analysis.graphValid)
+  if(g_Analysis.graphValid && g_Analysis.graphIsAnalysis)
   {
     g_UserSettings.analysisMenuSelection = ANALYSIS_MENU_NEW;
     updateSystemState(STATE_ANALYSIS_MENU);
@@ -2805,7 +3109,7 @@ static inline void updateAnalysisConfig(bool const rapidTimeAdjust)
 }
 
 /*---------------------------------------------------------------------------*/
-/*! @brief      Store the configured stop rule without changing other settings.
+/*! @brief      Store the stop rule and retained graph in a profile.
 *//*-------------------------------------------------------------------------*/
 static void saveAnalysisConfigToProfile(uint8_t const slot)
 {
@@ -2824,23 +3128,41 @@ static void saveAnalysisConfigToProfile(uint8_t const slot)
                   (g_AnalysisConfig.stopType << PROFILE_FLAG_STOP_TYPE_SHIFT);
   saveProfile(slot, &profile);
   saveProfileStopRule(slot, targetEnergy_J, g_AnalysisConfig.peakDropPercent);
+  saveProfileReference(slot);
+  // Once committed, the reference belongs to the profile. Analyse no longer
+  // presents a duplicate session copy through REVIEW or CONFIG.
+  g_Analysis.graphValid = false;
+  g_Analysis.graphIsAnalysis = false;
   g_UserSettings.profileSlot = slot;
   g_AnalysisConfig.profileSaveInProgress = true;
   // Analysis configuration uses the default PROFILE n name for an empty
   // slot. Renaming remains an explicit action in the Profiles menu.
-  updateSystemState(STATE_PROFILE_SAVED);
+  g_ProfileNotice = PROFILE_NOTICE_SAVED;
+  updateSystemState(STATE_PROFILE_NOTICE);
 }
 
 /*---------------------------------------------------------------------------*/
-/*! @brief      Initialise a manual, current-trace analysis run.
+/*! @brief      Convert milliamps to the byte stored in a graph or reference.
 *//*-------------------------------------------------------------------------*/
-static void beginAnalysis(void)
+static uint8_t graphSampleFromCurrent(uint16_t const current_ma)
 {
-  uint32_t const currentTime = millis();
+  return current_ma >= ANALYSIS_GRAPH_MAX_CURRENT_MA ?
+    ANALYSIS_GRAPH_MAX_SAMPLE : current_ma / ANALYSIS_GRAPH_CURRENT_STEP_MA;
+}
 
-  // Keep one height per OLED column so the completed trace can be reconstructed
-  // after other screens have replaced the display framebuffer.
-  display.clearDisplay();
+/*---------------------------------------------------------------------------*/
+/*! @brief      Convert a stored current sample to its 32-pixel graph height.
+*//*-------------------------------------------------------------------------*/
+static uint8_t graphHeightFromSample(uint8_t const sample)
+{
+  return ((uint16_t)sample * 31U) / ANALYSIS_GRAPH_MAX_SAMPLE;
+}
+
+/*---------------------------------------------------------------------------*/
+/*! @brief      Reset the shared graph buffer for Analyse or profile matching.
+*//*-------------------------------------------------------------------------*/
+static void resetGraphCapture(uint32_t const currentTime, bool const isAnalysis)
+{
   g_Analysis.startTime = currentTime;
   g_Analysis.nextSampleTime = currentTime;
   g_Analysis.lastSampleTime = currentTime;
@@ -2852,9 +3174,63 @@ static void beginAnalysis(void)
   g_Analysis.graphCurrentTotal_ma = 0;
   g_Analysis.graphCurrent_ma = 0;
   g_Analysis.graphCurrentSamples = 0;
-  g_Analysis.graphHeight = 0;
-  memset(g_Analysis.graphHeights, 0, sizeof(g_Analysis.graphHeights));
+  memset(g_Analysis.graphSamples, 0, sizeof(g_Analysis.graphSamples));
   g_Analysis.graphValid = false;
+  g_Analysis.graphIsAnalysis = isAnalysis;
+}
+
+/*---------------------------------------------------------------------------*/
+/*! @brief      Add one current reading to the shared eight-second graph.
+    @return     Milliseconds represented by this reading.
+*//*-------------------------------------------------------------------------*/
+static uint16_t recordGraphCurrent(uint16_t const current_ma, uint32_t const currentTime)
+{
+  uint16_t elapsed_ms = currentTime - g_Analysis.startTime;
+  uint16_t const samplePeriod_ms = currentTime - g_Analysis.lastSampleTime;
+  g_Analysis.lastSampleTime = currentTime;
+  if(elapsed_ms >= ANALYSIS_DURATION_MS)
+  {
+    elapsed_ms = ANALYSIS_DURATION_MS - 1;
+  }
+  g_Analysis.inputEnergy_mJ +=
+    (uint32_t)current_ma * samplePeriod_ms * ANALYSIS_SUPPLY_VOLTAGE_V / 1000UL;
+  if(current_ma > g_Analysis.peakCurrent_ma)
+  {
+    g_Analysis.peakCurrent_ma = current_ma;
+  }
+
+  uint8_t column = ((uint32_t)elapsed_ms * ANALYSIS_GRAPH_COLUMNS) /
+                   ANALYSIS_DURATION_MS;
+  if(column >= ANALYSIS_GRAPH_COLUMNS)
+  {
+    column = ANALYSIS_GRAPH_COLUMNS - 1;
+  }
+  if(column != g_Analysis.graphColumn)
+  {
+    g_Analysis.graphColumn = column;
+    g_Analysis.graphCurrentTotal_ma = current_ma;
+    g_Analysis.graphCurrentSamples = 1;
+  }
+  else
+  {
+    g_Analysis.graphCurrentTotal_ma += current_ma;
+    g_Analysis.graphCurrentSamples++;
+  }
+  g_Analysis.graphCurrent_ma =
+    g_Analysis.graphCurrentTotal_ma / g_Analysis.graphCurrentSamples;
+  g_Analysis.graphSamples[column] = graphSampleFromCurrent(g_Analysis.graphCurrent_ma);
+  return samplePeriod_ms;
+}
+
+/*---------------------------------------------------------------------------*/
+/*! @brief      Initialise a manual, current-trace analysis run.
+*//*-------------------------------------------------------------------------*/
+static void beginAnalysis(void)
+{
+  uint32_t const currentTime = millis();
+
+  display.clearDisplay();
+  resetGraphCapture(currentTime, true);
   drawAnalysisGraph();
   setSystemTimeTarget(currentTime + ANALYSIS_DURATION_MS);
   digitalWrite(g_FeederStepperEnPin,HIGH);
@@ -2871,11 +3247,7 @@ static void beginAnalysis(void)
 static void sampleAnalysisCurrent(uint32_t const currentTime)
 {
   uint16_t current_ma;
-  uint16_t averageCurrent_ma;
   uint16_t elapsed_ms;
-  uint8_t column;
-  uint8_t graphHeight;
-  uint32_t samplePeriod_ms;
 
   if(!hasTimeElapsed(g_Analysis.nextSampleTime, currentTime))
   {
@@ -2888,35 +3260,7 @@ static void sampleAnalysisCurrent(uint32_t const currentTime)
     elapsed_ms = ANALYSIS_DURATION_MS - 1;
   }
   current_ma = readPsuCurrent_ma();
-  samplePeriod_ms = currentTime - g_Analysis.lastSampleTime;
-  g_Analysis.lastSampleTime = currentTime;
-  g_Analysis.inputEnergy_mJ += (uint32_t)current_ma * samplePeriod_ms * ANALYSIS_SUPPLY_VOLTAGE_V / 1000UL;
-  if(current_ma > g_Analysis.peakCurrent_ma)
-  {
-    g_Analysis.peakCurrent_ma = current_ma;
-  }
-  column = ((uint32_t)elapsed_ms * ANALYSIS_GRAPH_COLUMNS) / ANALYSIS_DURATION_MS;
-  if(column >= ANALYSIS_GRAPH_COLUMNS)
-  {
-    column = ANALYSIS_GRAPH_COLUMNS - 1;
-  }
-  if(column != g_Analysis.graphColumn)
-  {
-    g_Analysis.graphColumn = column;
-    g_Analysis.graphCurrentTotal_ma = current_ma;
-    g_Analysis.graphCurrentSamples = 1;
-  }
-  else
-  {
-    g_Analysis.graphCurrentTotal_ma += current_ma;
-    g_Analysis.graphCurrentSamples++;
-  }
-  averageCurrent_ma = g_Analysis.graphCurrentTotal_ma / g_Analysis.graphCurrentSamples;
-  g_Analysis.graphCurrent_ma = averageCurrent_ma;
-  graphHeight = averageCurrent_ma >= ANALYSIS_GRAPH_MAX_CURRENT_MA ?
-    31 : ((uint32_t)averageCurrent_ma * 31UL) / ANALYSIS_GRAPH_MAX_CURRENT_MA;
-  g_Analysis.graphHeight = graphHeight;
-  g_Analysis.graphHeights[column] = graphHeight;
+  recordGraphCurrent(current_ma, currentTime);
 
   Serial.print(F("ANALYSE,SAMPLE,t_ms="));
   Serial.print(elapsed_ms);
@@ -2932,6 +3276,108 @@ static void sampleAnalysisCurrent(uint32_t const currentTime)
     turnStartStopLedOff();
     updateSystemState(STATE_OVERCURRENT_WARNING);
   }
+}
+
+/*---------------------------------------------------------------------------*/
+/*! @brief      Start comparing a normal case with the loaded profile curve.
+*//*-------------------------------------------------------------------------*/
+static void beginCasePerformance(uint32_t const currentTime)
+{
+  resetGraphCapture(currentTime, false);
+  g_CasePerformance.currentCycleCompared = false;
+  g_CasePerformance.errorTotal = 0;
+  g_CasePerformance.referenceTotal = 0;
+  g_CasePerformance.referenceEnergy_mJ = 0;
+  g_CasePerformance.referencePeakCurrent_ma = 0;
+  g_CasePerformance.energyPercent = 0;
+  g_CasePerformance.peakPercent = 0;
+  g_CasePerformance.matchPercent = 0;
+  g_CasePerformance.resultSlot = g_CasePerformance.referenceSlot;
+}
+
+/*---------------------------------------------------------------------------*/
+/*! @brief      Compare one normal annealing sample with the saved reference.
+*//*-------------------------------------------------------------------------*/
+static void recordCasePerformance(uint16_t const current_ma,
+                                  uint32_t const currentTime)
+{
+  uint16_t const samplePeriod_ms = recordGraphCurrent(current_ma, currentTime);
+  uint16_t elapsed_ms = currentTime - g_Analysis.startTime;
+  if(elapsed_ms >= ANALYSIS_DURATION_MS)
+  {
+    elapsed_ms = ANALYSIS_DURATION_MS - 1;
+  }
+  uint8_t referenceSample = ((uint32_t)elapsed_ms *
+                             PROFILE_REFERENCE_SAMPLE_COUNT) /
+                            ANALYSIS_DURATION_MS;
+  if(referenceSample >= PROFILE_REFERENCE_SAMPLE_COUNT)
+  {
+    referenceSample = PROFILE_REFERENCE_SAMPLE_COUNT - 1;
+  }
+  uint8_t const referenceValue =
+    readProfileReferenceSample(g_CasePerformance.referenceSlot, referenceSample);
+  uint8_t const actualValue = graphSampleFromCurrent(g_Analysis.graphCurrent_ma);
+  uint8_t const difference = actualValue > referenceValue ?
+    actualValue - referenceValue : referenceValue - actualValue;
+  uint16_t const referenceCurrent_ma =
+    (uint16_t)referenceValue * ANALYSIS_GRAPH_CURRENT_STEP_MA;
+
+  g_CasePerformance.errorTotal += (uint32_t)difference * samplePeriod_ms;
+  g_CasePerformance.referenceTotal +=
+    (uint32_t)referenceValue * samplePeriod_ms;
+  g_CasePerformance.referenceEnergy_mJ +=
+    (uint32_t)referenceCurrent_ma * samplePeriod_ms *
+    ANALYSIS_SUPPLY_VOLTAGE_V / 1000UL;
+  if(referenceCurrent_ma > g_CasePerformance.referencePeakCurrent_ma)
+  {
+    g_CasePerformance.referencePeakCurrent_ma = referenceCurrent_ma;
+  }
+}
+
+/*---------------------------------------------------------------------------*/
+/*! @brief      Finalise the comparison values retained for RESULT >.
+*//*-------------------------------------------------------------------------*/
+static void finishCasePerformance(void)
+{
+  g_Analysis.elapsedTime_ms = millis() - g_Analysis.startTime;
+  if(g_Analysis.elapsedTime_ms > ANALYSIS_DURATION_MS)
+  {
+    g_Analysis.elapsedTime_ms = ANALYSIS_DURATION_MS;
+  }
+  g_Analysis.graphValid = g_Analysis.graphColumn != UINT8_MAX;
+  g_Analysis.graphIsAnalysis = false;
+  g_CasePerformance.currentCycleCompared = g_Analysis.graphValid;
+
+  uint32_t errorPercent = g_CasePerformance.referenceTotal ?
+    (g_CasePerformance.errorTotal * 100UL) /
+    g_CasePerformance.referenceTotal : 100;
+  if(errorPercent > 100)
+  {
+    errorPercent = 100;
+  }
+  g_CasePerformance.matchPercent = 100 - errorPercent;
+
+  uint32_t ratio = g_CasePerformance.referenceEnergy_mJ ?
+    (g_Analysis.inputEnergy_mJ * 100UL) /
+    g_CasePerformance.referenceEnergy_mJ : 0;
+  g_CasePerformance.energyPercent = ratio > 999 ? 999 : ratio;
+  ratio = g_CasePerformance.referencePeakCurrent_ma ?
+    ((uint32_t)g_Analysis.peakCurrent_ma * 100UL) /
+    g_CasePerformance.referencePeakCurrent_ma : 0;
+  g_CasePerformance.peakPercent = ratio > 999 ? 999 : ratio;
+
+  Serial.print(F("PROFILE,RESULT,slot="));
+  Serial.print(g_CasePerformance.resultSlot + 1);
+  Serial.print(F(",match_pct="));
+  Serial.print(g_CasePerformance.matchPercent);
+  Serial.print(F(",energy_pct="));
+  Serial.print(g_CasePerformance.energyPercent);
+  Serial.print(F(",peak_pct="));
+  Serial.print(g_CasePerformance.peakPercent);
+  Serial.print(FPSTR(TEXT_INPUT_ENERGY));
+  printAnalysisEnergy_J(g_Analysis.inputEnergy_mJ);
+  Serial.print(F(",peak_ma="));
+  Serial.println(g_Analysis.peakCurrent_ma);
 }
 
 /*---------------------------------------------------------------------------*/
@@ -2982,7 +3428,7 @@ static void openAnalysisDropGate(void)
 *//*-------------------------------------------------------------------------*/
 static void showSavedAnalysis(void)
 {
-  if(!g_Analysis.graphValid)
+  if(!g_Analysis.graphValid || !g_Analysis.graphIsAnalysis)
   {
     updateSystemState(STATE_ANALYSIS_LOAD);
     return;
@@ -3437,21 +3883,44 @@ static void drawAnalysisLoadScreen(void)
 }
 
 /*---------------------------------------------------------------------------*/
-/*! @brief      Draw the full-width, fixed-scale eight-second current trace.
+/*! @brief      Draw captured points, optionally over a dotted profile curve.
 *//*-------------------------------------------------------------------------*/
-static void drawAnalysisGraph(void)
+static void drawCapturedGraph(bool const withReference)
 {
-  uint8_t column;
-  uint16_t const energy_J = (g_Analysis.inputEnergy_mJ + 500UL) / 1000UL;
-
   display.clearDisplay();
-  if(g_Analysis.graphColumn != UINT8_MAX)
+  if(withReference)
   {
-    for(column = 0; column <= g_Analysis.graphColumn; column++)
+    for(uint8_t sample = 0; sample < PROFILE_REFERENCE_SAMPLE_COUNT; sample++)
     {
-      display.drawPixel(column, 31 - g_Analysis.graphHeights[column], WHITE);
+      uint8_t const height = graphHeightFromSample(
+        readProfileReferenceSample(g_CasePerformance.resultSlot, sample));
+      display.drawPixel(sample * 2, 31 - height, WHITE);
     }
   }
+  if(g_Analysis.graphColumn != UINT8_MAX)
+  {
+    uint8_t previousY = 31 - graphHeightFromSample(g_Analysis.graphSamples[0]);
+    for(uint8_t column = 0; column <= g_Analysis.graphColumn; column++)
+    {
+      uint8_t const y = 31 - graphHeightFromSample(g_Analysis.graphSamples[column]);
+      display.drawPixel(column, y, WHITE);
+      if(withReference && column > 0)
+      {
+        uint8_t const top = y < previousY ? y : previousY;
+        uint8_t const height = y > previousY ? y - previousY + 1 : previousY - y + 1;
+        display.drawFastVLine(column, top, height, WHITE);
+      }
+      previousY = y;
+    }
+  }
+}
+
+/*---------------------------------------------------------------------------*/
+/*! @brief      Draw the live current and accumulated energy graph labels.
+*//*-------------------------------------------------------------------------*/
+static void drawGraphMeasurements(void)
+{
+  uint16_t const energy_J = (g_Analysis.inputEnergy_mJ + 500UL) / 1000UL;
 
   display.setTextSize(1);
   display.setTextColor(WHITE);
@@ -3466,6 +3935,70 @@ static void drawAnalysisGraph(void)
   display.setCursor(ANALYSIS_ENERGY_X, 24);
   display.print(F("J:"));
   display.print(energy_J);
+}
+
+/*---------------------------------------------------------------------------*/
+/*! @brief      Draw the full-width, fixed-scale eight-second current trace.
+*//*-------------------------------------------------------------------------*/
+static void drawAnalysisGraph(void)
+{
+  drawCapturedGraph(false);
+  drawGraphMeasurements();
+  display.display();
+}
+
+/*---------------------------------------------------------------------------*/
+/*! @brief      Compare the latest case line with its dotted reference line.
+*//*-------------------------------------------------------------------------*/
+static void drawCasePerformanceGraph(tPerformanceFooter const footer,
+                                     uint16_t const remainingTime_ms)
+{
+  drawCapturedGraph(true);
+  if(footer == PERFORMANCE_FOOTER_LIVE)
+  {
+    drawGraphMeasurements();
+    display.display();
+    return;
+  }
+
+  display.fillRect(0, 24, SCREEN_WIDTH, 8, BLACK);
+  display.setTextSize(1);
+  display.setTextColor(WHITE);
+  if(footer == PERFORMANCE_FOOTER_REVIEW)
+  {
+    display.setCursor(0, 24);
+    display.setTextColor(BLACK, WHITE);
+    display.print(FPSTR(TEXT_BACK_ITEM));
+    display.setTextColor(WHITE);
+    display.setCursor(42, 24);
+    display.write('M');
+    display.print(g_CasePerformance.matchPercent);
+    display.write('%');
+    display.setCursor(78, 24);
+    display.write('E');
+    display.print(g_CasePerformance.energyPercent);
+    display.write('%');
+  }
+  else
+  {
+    display.setCursor(0, 24);
+    display.write('M');
+    display.print(g_CasePerformance.matchPercent);
+    display.print(F("% E"));
+    display.print(g_CasePerformance.energyPercent);
+    if(footer == PERFORMANCE_FOOTER_DROP)
+    {
+      display.print(F("% DROP"));
+    }
+    else
+    {
+      display.print(F("% NEXT "));
+      display.print(remainingTime_ms / 1000);
+      display.write('.');
+      display.print((remainingTime_ms % 1000) / 100);
+      display.write('s');
+    }
+  }
   display.display();
 }
 
@@ -3654,6 +4187,68 @@ static void drawProfileActionsScreen(void)
 }
 
 /*---------------------------------------------------------------------------*/
+/*! @brief      Review a profile reference or its latest comparison case.
+*//*-------------------------------------------------------------------------*/
+static void drawProfilePerformanceScreen(void)
+{
+  if(g_Analysis.graphValid && !g_Analysis.graphIsAnalysis &&
+     g_CasePerformance.resultSlot == g_UserSettings.profileSlot)
+  {
+    drawCasePerformanceGraph(PERFORMANCE_FOOTER_REVIEW, 0);
+  }
+  else
+  {
+    drawProfileReferenceScreen();
+  }
+}
+
+/*---------------------------------------------------------------------------*/
+/*! @brief      Review a saved reference before a comparison case exists.
+*//*-------------------------------------------------------------------------*/
+static void drawProfileReferenceScreen(void)
+{
+  uint16_t const address = getProfileReferenceAddress(g_UserSettings.profileSlot);
+  uint16_t const peakCurrent_ma =
+    EEPROM.read(address + PROFILE_REFERENCE_PEAK_OFFSET) |
+    ((uint16_t)EEPROM.read(address + PROFILE_REFERENCE_PEAK_OFFSET + 1) << 8);
+  uint16_t const energy_J =
+    EEPROM.read(address + PROFILE_REFERENCE_ENERGY_OFFSET) |
+    ((uint16_t)EEPROM.read(address + PROFILE_REFERENCE_ENERGY_OFFSET + 1) << 8);
+
+  display.clearDisplay();
+  uint8_t previousY = 31 - graphHeightFromSample(
+    readProfileReferenceSample(g_UserSettings.profileSlot, 0));
+  for(uint8_t sample = 0; sample < PROFILE_REFERENCE_SAMPLE_COUNT; sample++)
+  {
+    uint8_t const x = sample * 2;
+    uint8_t const y = 31 - graphHeightFromSample(
+      readProfileReferenceSample(g_UserSettings.profileSlot, sample));
+    uint8_t const top = y < previousY ? y : previousY;
+    uint8_t const height = y > previousY ? y - previousY + 1 : previousY - y + 1;
+    display.drawFastVLine(x, top, height, WHITE);
+    display.drawPixel(x + 1, y, WHITE);
+    previousY = y;
+  }
+
+  display.fillRect(0, 24, SCREEN_WIDTH, 8, BLACK);
+  display.setTextSize(1);
+  display.setCursor(0, 24);
+  display.setTextColor(BLACK, WHITE);
+  display.print(FPSTR(TEXT_BACK_ITEM));
+  display.setTextColor(WHITE);
+  display.setCursor(42, 24);
+  display.print(F("A:"));
+  display.print(peakCurrent_ma / 1000);
+  display.write('.');
+  display.print((peakCurrent_ma % 1000) / 100);
+  display.write('A');
+  display.setCursor(84, 24);
+  display.print(F("J:"));
+  display.print(energy_J);
+  display.display();
+}
+
+/*---------------------------------------------------------------------------*/
 /*! @brief      Draw the fixed-width arcade-style profile-name editor.
 *//*-------------------------------------------------------------------------*/
 static void drawProfileNameEditScreen(void)
@@ -3711,16 +4306,33 @@ static void drawProfileDeleteConfirmScreen(void)
 }
 
 /*---------------------------------------------------------------------------*/
-/*! @brief      Acknowledge that a profile was written before returning to it.
+/*! @brief      Acknowledge a profile operation before returning from it.
 *//*-------------------------------------------------------------------------*/
-static void drawProfileSavedScreen(void)
+static void drawProfileNoticeScreen(void)
 {
   beginFullWidthScreen();
   display.setCursor(0, 0);
   display.print(FPSTR(TEXT_PROFILES));
   display.setTextSize(2);
   display.setCursor(0, 12);
-  display.print(F("SAVED"));
+  switch(g_ProfileNotice)
+  {
+    case PROFILE_NOTICE_LOADED:
+      display.print(F("LOADED"));
+      break;
+    case PROFILE_NOTICE_DELETED:
+      display.print(F("DELETED"));
+      break;
+    case PROFILE_NOTICE_EMPTY:
+      display.print(F("EMPTY"));
+      break;
+    case PROFILE_NOTICE_NO_DATA:
+      display.print(F("NO DATA"));
+      break;
+    default:
+      display.print(F("SAVED"));
+      break;
+  }
   display.setTextSize(1);
   display.display();
 }
