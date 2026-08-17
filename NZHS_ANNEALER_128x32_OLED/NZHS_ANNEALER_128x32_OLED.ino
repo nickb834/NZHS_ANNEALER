@@ -965,6 +965,15 @@ static uint32_t g_R4MatrixPageTime = 0;
 static uint32_t g_R4MatrixHeartbeatTime = 0;
 #endif
 
+#if NZHS_HAS_WIFI
+static WiFiServer g_R4WifiServer(80);
+static WiFiClient g_R4WifiClient;
+static bool g_R4WifiMonitorActive = false;
+static char g_R4WifiRequestLine[96];
+static uint8_t g_R4WifiRequestLength = 0;
+static uint32_t g_R4WifiClientDeadline = 0;
+#endif
+
 #if NZHS_PLATFORM_UNO_R3
   #define FEEDER_TIMER_COMPARE OCR2A
 #else
@@ -1132,12 +1141,25 @@ static void r4ResetWatchdog(void);
 static bool r4PlatformReady(void);
 #endif
 #if NZHS_HAS_LED_MATRIX
-static void r4HandleMatrixDebugSerial(void);
+static void r4HandleBenchSerial(void);
 static void r4BeginMatrixDebug(void);
 static void r4UpdateMatrixDebug(int16_t const temperature);
 static void r4DrawMatrixWord(uint8_t pixels[96], char const * const word);
 static void r4RenderMatrixPage(int16_t const temperature);
 static void r4PrintMatrixDebugStatus(void);
+#endif
+#if NZHS_HAS_WIFI
+static void r4BeginWifiMonitor(void);
+static void r4UpdateWifiMonitor(int16_t const temperature,
+                                uint16_t const current_ma,
+                                uint16_t const casesAnnealed,
+                                bool const fanIsOn);
+static void r4SendWifiMonitorPage(WiFiClient &client);
+static void r4SendWifiStatus(WiFiClient &client, int16_t const temperature,
+                             uint16_t const current_ma,
+                             uint16_t const casesAnnealed,
+                             bool const fanIsOn);
+static void r4SendWifiCurve(WiFiClient &client);
 #endif
 
 /*---------------------------------------------------------------------------*/
@@ -1314,7 +1336,7 @@ void setup()
   if(!g_R4DropServoReady) Serial.println(F("R4 INIT ERROR: DROP SERVO"));
   if(!g_R4WatchdogReady) Serial.println(F("R4 INIT ERROR: WATCHDOG"));
   #if NZHS_HAS_LED_MATRIX
-  Serial.println(F("R4 bench debug: send M while stopped to enable the LED matrix."));
+  Serial.println(F("R4 bench: send M for matrix diagnostics or W for WiFi monitor while stopped."));
   #endif
   #endif
   digitalWrite(g_FeederStepperEnPin,HIGH); //disable stepper driver
@@ -1801,19 +1823,52 @@ static void r4BeginMatrixDebug(void)
 }
 
 /*---------------------------------------------------------------------------*/
-/*! @brief      Accept M to enter diagnostics and M/N to advance pages.
+/*! @brief      Dispatch non-persistent R4 WiFi bench commands.
 *//*-------------------------------------------------------------------------*/
-static void r4HandleMatrixDebugSerial(void)
+static void r4HandleBenchSerial(void)
 {
   while(Serial.available())
   {
     char const command = Serial.read();
+    if(command == 'W' || command == 'w')
+    {
+      #if NZHS_HAS_WIFI
+      if(g_R4WifiMonitorActive)
+      {
+        Serial.println(F("WIFI MONITOR ALREADY ACTIVE"));
+      }
+      else if(g_R4MatrixDebugActive)
+      {
+        Serial.println(F("WIFI MONITOR REFUSED: RESET TO EXIT MATRIX DEBUG"));
+      }
+      else if(g_SystemState == STATE_STOPPED)
+      {
+        r4BeginWifiMonitor();
+      }
+      else
+      {
+        Serial.println(F("WIFI MONITOR REFUSED: STOP THE ANNEALER FIRST"));
+      }
+      #endif
+      continue;
+    }
     if(command != 'M' && command != 'm' && command != 'N' && command != 'n')
     {
       continue;
     }
     if(!g_R4MatrixDebugActive)
     {
+      if(command == 'N' || command == 'n')
+      {
+        continue;
+      }
+      #if NZHS_HAS_WIFI
+      if(g_R4WifiMonitorActive)
+      {
+        Serial.println(F("MATRIX DEBUG REFUSED: WIFI MONITOR ACTIVE"));
+        continue;
+      }
+      #endif
       if(g_SystemState == STATE_STOPPED)
       {
         r4BeginMatrixDebug();
@@ -1879,6 +1934,339 @@ static void r4UpdateMatrixDebug(int16_t const temperature)
 }
 #endif
 
+#if NZHS_HAS_WIFI
+static const char R4_WIFI_MONITOR_HTML[] = R"HTML(<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>NZHS Annealer Monitor</title><style>
+:root{color-scheme:dark;font-family:system-ui,sans-serif}body{margin:0;background:#080b10;color:#edf6ff}main{max-width:900px;margin:auto;padding:18px}.head{display:flex;justify-content:space-between;align-items:baseline;gap:12px}h1{font-size:1.35rem;margin:0}.tag{color:#7fc8ff}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(135px,1fr));gap:10px;margin:16px 0}.card{background:#111a24;border:1px solid #24374a;border-radius:8px;padding:10px}.label{color:#8da4b8;font-size:.72rem;text-transform:uppercase}.value{font-size:1.35rem;margin-top:3px}canvas{width:100%;height:auto;background:#05080c;border:1px solid #24374a;border-radius:8px}.foot{color:#8da4b8;font-size:.8rem;margin-top:10px}.bad{color:#ff847c}.ok{color:#8ce99a}
+</style></head><body><main><div class="head"><h1>NZHS Annealer</h1><span class="tag">read-only monitor</span></div>
+<div class="grid"><div class="card"><div class="label">State</div><div class="value" id="state">-</div></div><div class="card"><div class="label">Mode</div><div class="value" id="mode">-</div></div><div class="card"><div class="label">Current</div><div class="value" id="current">-</div></div><div class="card"><div class="label">Temperature</div><div class="value" id="temp">-</div></div><div class="card"><div class="label">Energy</div><div class="value" id="energy">-</div></div><div class="card"><div class="label">Peak</div><div class="value" id="peak">-</div></div><div class="card"><div class="label">Cases</div><div class="value" id="cases">-</div></div><div class="card"><div class="label">Remaining</div><div class="value" id="remaining">-</div></div></div>
+<canvas id="curve" width="800" height="320"></canvas><div class="foot" id="detail">Connecting...</div></main><script>
+const $=id=>document.getElementById(id),cv=$('curve'),cx=cv.getContext('2d');let curve={actual:[],reference:[],max_ma:12500,duration_ms:8000};
+function value(id,v,s=''){ $(id).textContent=v==null?'-':v+s }
+function draw(){let w=cv.width,h=cv.height,l=48,r=12,t=12,b=30;cx.clearRect(0,0,w,h);cx.strokeStyle='#24374a';cx.fillStyle='#8da4b8';cx.font='12px system-ui';for(let i=0;i<3;i++){let y=t+(h-t-b)*i/2;cx.beginPath();cx.moveTo(l,y);cx.lineTo(w-r,y);cx.stroke();cx.fillText((curve.max_ma*(2-i)/2000).toFixed(i?2:1)+'A',3,y+4)}for(let i=0;i<3;i++){let x=l+(w-l-r)*i/2;cx.fillText((curve.duration_ms*i/2000).toFixed(0)+'s',x-8,h-8)}function line(a,color,n){if(!a.length)return;cx.strokeStyle=color;cx.lineWidth=2;cx.beginPath();a.forEach((v,i)=>{let x=l+(w-l-r)*i/(n-1),y=t+(h-t-b)*(1-v/250);i?cx.lineTo(x,y):cx.moveTo(x,y)});cx.stroke()}line(curve.reference,'#718096',64);line(curve.actual,'#55b9ff',128)}
+async function status(){try{let s=await fetch('/api/status',{cache:'no-store'}).then(r=>r.json());value('state',s.state);value('mode',s.mode);value('current',s.current_a,' A');value('temp',s.temperature_c,' C');value('energy',s.energy_j,' J');value('peak',s.peak_a,' A');value('cases',s.cases);value('remaining',(s.remaining_ms/1000).toFixed(1),' s');$('detail').className='foot '+(s.fault?'bad':'ok');$('detail').textContent=(s.fault?'FAULT | ':'')+'Profile '+s.profile+' | match '+(s.match_pct==null?'-':s.match_pct+'%')+' | energy '+(s.energy_pct==null?'-':s.energy_pct+'%')+' | '+(s.cooldown_lock?'cooldown lock active':'monitoring')}catch(e){$('detail').className='foot bad';$('detail').textContent='Monitor unavailable'}}
+async function graph(){try{curve=await fetch('/api/curve',{cache:'no-store'}).then(r=>r.json());draw()}catch(e){}}
+status();graph();setInterval(status,500);setInterval(graph,1000);
+</script></body></html>)HTML";
+
+/*---------------------------------------------------------------------------*/
+/*! @brief      Return a compact human-readable name for web telemetry.
+*//*-------------------------------------------------------------------------*/
+static char const * r4WifiStateName(tStateMachineStates const state)
+{
+  switch(state)
+  {
+    case STATE_STOPPED: return "STOPPED";
+    case STATE_PRELOAD: return "PRELOAD";
+    case STATE_ANNEALING: return "ANNEALING";
+    case STATE_DROPPING: return "DROPPING";
+    case STATE_RELOADING: return "RELOADING";
+    case STATE_COOLDOWN: return "COOLDOWN";
+    case STATE_JUST_BOOTED: return "BOOTING";
+    case STATE_SHOW_WARNING: return "WARNING";
+    case STATE_SETTINGS: return "SETTINGS";
+    case STATE_PROFILES: return "PROFILES";
+    case STATE_PROFILE_ACTIONS: return "PROFILE";
+    case STATE_PROFILE_PERFORMANCE: return "PERFORMANCE";
+    case STATE_PROFILE_NAME_EDIT: return "RENAME";
+    case STATE_PROFILE_DELETE_CONFIRM: return "DELETE";
+    case STATE_PROFILE_NOTICE: return "PROFILE NOTICE";
+    case STATE_ANALYSIS_LOAD: return "ANALYSE READY";
+    case STATE_ANALYSING: return "ANALYSING";
+    case STATE_ANALYSIS_GATE_OPEN: return "ANALYSE DUMP";
+    case STATE_ANALYSIS_RESULT: return "ANALYSE RESULT";
+    case STATE_DIAGNOSTICS: return "DIAGNOSTICS";
+    case STATE_INFO: return "INFO";
+    case STATE_OVERCURRENT_WARNING: return "OVERCURRENT";
+    case STATE_LOW_CURRENT_WARNING: return "LOW CURRENT";
+    case STATE_TEMPERATURE_SENSOR_WARNING: return "TEMP ERROR";
+    case STATE_ANALYSIS_MENU: return "ANALYSE";
+    case STATE_ANALYSIS_CONFIG: return "ANALYSE CONFIG";
+    case STATE_TARGET_TIMEOUT_WARNING: return "TARGET TIMEOUT";
+    case STATE_CURRENT_SENSOR_REQUIRED: return "CURRENT REQUIRED";
+    case STATE_PLATFORM_WARNING: return "R4 HW ERROR";
+    default: return "UNKNOWN";
+  }
+}
+
+/*---------------------------------------------------------------------------*/
+/*! @brief      Write common HTTP headers for a short-lived response.
+*//*-------------------------------------------------------------------------*/
+static void r4SendWifiHeaders(WiFiClient &client, char const * const contentType,
+                              uint16_t const status = 200)
+{
+  client.print(F("HTTP/1.1 "));
+  client.print(status);
+  client.println(status == 200 ? F(" OK") : F(" Not Found"));
+  client.print(F("Content-Type: "));
+  client.println(contentType);
+  client.println(F("Cache-Control: no-store"));
+  client.println(F("Connection: close"));
+  client.println();
+}
+
+/*---------------------------------------------------------------------------*/
+/*! @brief      Serve the embedded read-only browser dashboard.
+*//*-------------------------------------------------------------------------*/
+static void r4SendWifiMonitorPage(WiFiClient &client)
+{
+  r4SendWifiHeaders(client, "text/html; charset=utf-8");
+  client.print(R4_WIFI_MONITOR_HTML);
+}
+
+/*---------------------------------------------------------------------------*/
+/*! @brief      Serve the current operating state as JSON.
+*//*-------------------------------------------------------------------------*/
+static void r4SendWifiStatus(WiFiClient &client, int16_t const temperature,
+                             uint16_t const current_ma,
+                             uint16_t const casesAnnealed,
+                             bool const fanIsOn)
+{
+  tStateMachineStates const state = g_SystemState;
+  uint32_t remaining_ms = 0;
+  uint32_t const currentTime = millis();
+  if((state == STATE_ANNEALING || state == STATE_DROPPING ||
+      state == STATE_RELOADING || state == STATE_ANALYSING ||
+      state == STATE_ANALYSIS_GATE_OPEN) &&
+     !hasTimeElapsed(SystemTimeTarget, currentTime))
+  {
+    remaining_ms = SystemTimeTarget - currentTime;
+  }
+  uint16_t liveCurrent_ma = current_ma;
+  bool const graphLive = state == STATE_ANALYSING ||
+    (state == STATE_ANNEALING &&
+     (g_UserSettings.stopType != PROFILE_STOP_TIME ||
+      (g_CasePerformance.referenceValid && CurrentSensorPresent)));
+  bool const graphAvailable = graphLive ||
+    (state != STATE_ANNEALING && g_Analysis.graphValid);
+  if(graphLive)
+  {
+    liveCurrent_ma = g_Analysis.graphCurrent_ma;
+  }
+  else if(state != STATE_ANNEALING)
+  {
+    liveCurrent_ma = 0;
+  }
+  bool const fault = state == STATE_OVERCURRENT_WARNING ||
+                     state == STATE_LOW_CURRENT_WARNING ||
+                     state == STATE_TEMPERATURE_SENSOR_WARNING ||
+                     state == STATE_TARGET_TIMEOUT_WARNING ||
+                     state == STATE_CURRENT_SENSOR_REQUIRED ||
+                     state == STATE_PLATFORM_WARNING;
+  char const * mode = CurrentMode == MODE_AUTOMATIC ? "AUTO FEED" :
+                      CurrentMode == MODE_FREE_RUN ? "FREE RUN" : "SINGLE";
+
+  r4SendWifiHeaders(client, "application/json");
+  client.print(F("{\"state\":\""));
+  client.print(r4WifiStateName(state));
+  client.print(F("\",\"mode\":\""));
+  client.print(mode);
+  client.print(F("\",\"temperature_c\":"));
+  if(NumberDallasTempDevices && isTemperatureReadingValid(temperature))
+  {
+    int16_t const tenths = ((int32_t)temperature * 10 +
+      (temperature < 0 ? -(TEMP_RAW_SCALE / 2) : (TEMP_RAW_SCALE / 2))) /
+      TEMP_RAW_SCALE;
+    if(tenths < 0 && tenths > -10) client.write('-');
+    client.print(tenths / 10);
+    client.write('.');
+    client.print(tenths < 0 ? (uint8_t)(-tenths % 10) :
+                              (uint8_t)(tenths % 10));
+  }
+  else
+  {
+    client.print(F("null"));
+  }
+  client.print(F(",\"current_a\":"));
+  if(CurrentSensorPresent)
+  {
+    client.print(liveCurrent_ma / 1000);
+    client.write('.');
+    client.print((liveCurrent_ma % 1000) / 100);
+  }
+  else
+  {
+    client.print(F("null"));
+  }
+  client.print(F(",\"energy_j\":"));
+  if(graphAvailable)
+  {
+    client.print(g_Analysis.inputEnergy_mJ / 1000UL);
+    client.write('.');
+    client.print((g_Analysis.inputEnergy_mJ % 1000UL) / 100UL);
+  }
+  else client.print(F("null"));
+  client.print(F(",\"peak_a\":"));
+  if(graphAvailable)
+  {
+    client.print(g_Analysis.peakCurrent_ma / 1000);
+    client.write('.');
+    client.print((g_Analysis.peakCurrent_ma % 1000) / 100);
+  }
+  else client.print(F("null"));
+  client.print(F(",\"cases\":"));
+  client.print(casesAnnealed);
+  client.print(F(",\"remaining_ms\":"));
+  client.print(remaining_ms);
+  client.print(F(",\"profile\":"));
+  client.print(g_UserSettings.profileSlot + 1);
+  client.print(F(",\"match_pct\":"));
+  if(g_CasePerformance.currentCycleCompared) client.print(g_CasePerformance.matchPercent);
+  else client.print(F("null"));
+  client.print(F(",\"energy_pct\":"));
+  if(g_CasePerformance.currentCycleCompared) client.print(g_CasePerformance.energyPercent);
+  else client.print(F("null"));
+  client.print(F(",\"fan\":"));
+  client.print(fanIsOn ? F("true") : F("false"));
+  client.print(F(",\"cooldown_lock\":"));
+  client.print(g_RunSafety.cooldownLockActive ? F("true") : F("false"));
+  client.print(F(",\"fault\":"));
+  client.print(fault ? F("true") : F("false"));
+  client.println('}');
+}
+
+/*---------------------------------------------------------------------------*/
+/*! @brief      Serve compact 0-250 graph samples and the active reference.
+*//*-------------------------------------------------------------------------*/
+static void r4SendWifiCurve(WiFiClient &client)
+{
+  uint8_t const actualCount = g_Analysis.graphColumn == UINT8_MAX ? 0 :
+    g_Analysis.graphColumn + 1;
+  r4SendWifiHeaders(client, "application/json");
+  client.print(F("{\"duration_ms\":"));
+  client.print(ANALYSIS_DURATION_MS);
+  client.print(F(",\"max_ma\":"));
+  client.print(ANALYSIS_GRAPH_MAX_CURRENT_MA);
+  client.print(F(",\"actual\":["));
+  for(uint8_t sample = 0; sample < actualCount; sample++)
+  {
+    if(sample) client.write(',');
+    client.print(g_Analysis.graphSamples[sample]);
+  }
+  client.print(F("],\"reference\":["));
+  if(g_CasePerformance.referenceValid)
+  {
+    for(uint8_t sample = 0; sample < PROFILE_REFERENCE_SAMPLE_COUNT; sample++)
+    {
+      if(sample) client.write(',');
+      client.print(readProfileReferenceSample(g_CasePerformance.referenceSlot, sample));
+    }
+  }
+  client.println(F("]}"));
+}
+
+/*---------------------------------------------------------------------------*/
+/*! @brief      Start an open, read-only local access point on demand.
+*//*-------------------------------------------------------------------------*/
+static void r4BeginWifiMonitor(void)
+{
+  if(WiFi.status() == WL_NO_MODULE)
+  {
+    Serial.println(F("WIFI MONITOR ERROR: WIFI MODULE NOT FOUND"));
+    return;
+  }
+  Serial.println(F("WIFI MONITOR: STARTING OPEN READ-ONLY ACCESS POINT"));
+  uint8_t const status = WiFi.beginAP("NZHS-Annealer");
+  if(status != WL_AP_LISTENING && status != WL_AP_CONNECTED)
+  {
+    Serial.print(F("WIFI MONITOR ERROR: AP STATUS "));
+    Serial.println(status);
+    WiFi.end();
+    return;
+  }
+  g_R4WifiServer.begin();
+  g_R4WifiMonitorActive = true;
+  Serial.println(F("WIFI MONITOR ACTIVE - RESET TO EXIT"));
+  Serial.println(F("SSID: NZHS-Annealer (open, read-only)"));
+  Serial.print(F("Open http://"));
+  Serial.println(WiFi.localIP());
+}
+
+/*---------------------------------------------------------------------------*/
+/*! @brief      Service at most one short HTTP request without waiting.
+*//*-------------------------------------------------------------------------*/
+static void r4UpdateWifiMonitor(int16_t const temperature,
+                                uint16_t const current_ma,
+                                uint16_t const casesAnnealed,
+                                bool const fanIsOn)
+{
+  if(!g_R4WifiMonitorActive)
+  {
+    return;
+  }
+  if(!g_R4WifiClient || !g_R4WifiClient.connected())
+  {
+    g_R4WifiClient.stop();
+    g_R4WifiClient = g_R4WifiServer.available();
+    if(!g_R4WifiClient)
+    {
+      return;
+    }
+    g_R4WifiRequestLength = 0;
+    g_R4WifiClientDeadline = millis() + 750UL;
+  }
+
+  uint8_t bytesRead = 0;
+  while(g_R4WifiClient.available() && bytesRead < 64)
+  {
+    char const incoming = g_R4WifiClient.read();
+    bytesRead++;
+    if(incoming == '\n')
+    {
+      g_R4WifiRequestLine[g_R4WifiRequestLength] = 0;
+      char * requestTarget = g_R4WifiRequestLine;
+      if(strncmp(requestTarget, "GET ", 4) == 0)
+      {
+        requestTarget += 4;
+      }
+      char * requestTargetEnd = strchr(requestTarget, ' ');
+      if(requestTargetEnd) *requestTargetEnd = 0;
+      requestTargetEnd = strchr(requestTarget, '?');
+      if(requestTargetEnd) *requestTargetEnd = 0;
+      uint8_t const requestTargetLength = strlen(requestTarget);
+      if(requestTargetLength > 1 && requestTarget[requestTargetLength - 1] == '/')
+      {
+        requestTarget[requestTargetLength - 1] = 0;
+      }
+
+      if(strcmp(requestTarget, "/api/status") == 0)
+      {
+        r4SendWifiStatus(g_R4WifiClient, temperature, current_ma,
+                         casesAnnealed, fanIsOn);
+      }
+      else if(strcmp(requestTarget, "/api/curve") == 0)
+      {
+        r4SendWifiCurve(g_R4WifiClient);
+      }
+      else if(strcmp(requestTarget, "/") == 0)
+      {
+        r4SendWifiMonitorPage(g_R4WifiClient);
+      }
+      else
+      {
+        Serial.print(F("WIFI HTTP 404: "));
+        Serial.println(requestTarget);
+        r4SendWifiHeaders(g_R4WifiClient, "text/plain", 404);
+        g_R4WifiClient.println(F("Not found"));
+      }
+      g_R4WifiClient.stop();
+      g_R4WifiRequestLength = 0;
+      return;
+    }
+    if(incoming != '\r' && g_R4WifiRequestLength < sizeof(g_R4WifiRequestLine) - 1)
+    {
+      g_R4WifiRequestLine[g_R4WifiRequestLength++] = incoming;
+    }
+  }
+  if(hasTimeElapsed(g_R4WifiClientDeadline, millis()))
+  {
+    g_R4WifiClient.stop();
+    g_R4WifiRequestLength = 0;
+  }
+}
+#endif
+
 /*---------------------------------------------------------------------------*/
 /*! @brief      Main Loop.
   @details      None.
@@ -1929,7 +2317,7 @@ void loop()
   modeKey = readModeButton();
   upKey = readUpButton();
   #if NZHS_HAS_LED_MATRIX
-  r4HandleMatrixDebugSerial();
+  r4HandleBenchSerial();
   #endif
 
   // DS18B20 conversion takes longer than the 25 ms analysis sampler.
@@ -3080,6 +3468,9 @@ void loop()
 
   #if NZHS_HAS_LED_MATRIX
   r4UpdateMatrixDebug(temperature);
+  #endif
+  #if NZHS_HAS_WIFI
+  r4UpdateWifiMonitor(temperature, psuCurrent_ma, CasesAnnealed, FanIsOn);
   #endif
 
   #ifdef DEBUG
