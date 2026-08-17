@@ -131,6 +131,10 @@
 #define WIFI_PASSWORD_MAX_LENGTH 63
 #define WIFI_CONNECT_TIMEOUT_MS 15000UL
 #define WIFI_HTTP_REQUEST_MAX_LENGTH 1536
+#define WIFI_HISTORY_RECORD_COUNT 16
+#define WIFI_HISTORY_NO_PROFILE UINT8_MAX
+#define WIFI_HISTORY_FLAG_ANALYSIS 0x01
+#define WIFI_HISTORY_FLAG_MATCH 0x02
 #endif
 #define PROFILE_NOTICE_PERIOD 1000
 #define RIGHT_PANEL_X 56
@@ -587,6 +591,19 @@ typedef enum tR4WifiMode : uint8_t
   R4_WIFI_SETUP_AP,
   R4_WIFI_ERROR,
 } tR4WifiMode;
+
+typedef enum tWifiHistoryReason : uint8_t
+{
+  WIFI_HISTORY_ANALYSE = 0,
+  WIFI_HISTORY_USER_ABORT,
+  WIFI_HISTORY_TIME,
+  WIFI_HISTORY_ENERGY,
+  WIFI_HISTORY_PEAK_DROP,
+  WIFI_HISTORY_TIMEOUT,
+  WIFI_HISTORY_OVERCURRENT,
+  WIFI_HISTORY_LOW_CURRENT,
+  WIFI_HISTORY_TEMP_ERROR,
+} tWifiHistoryReason;
 #endif
 
 typedef enum tAnalysisMenuSelection : uint8_t
@@ -685,6 +702,22 @@ typedef struct __attribute__((packed)) tR4WifiConfig
   char password[WIFI_PASSWORD_MAX_LENGTH + 1];
   uint8_t checksum;
 } tR4WifiConfig;
+
+typedef struct tWifiHistoryRecord
+{
+  uint32_t completedAt_ms;
+  uint32_t inputEnergy_mJ;
+  uint16_t id;
+  uint16_t elapsedTime_ms;
+  uint16_t peakCurrent_ma;
+  uint16_t energyPercent;
+  uint8_t matchPercent;
+  uint8_t reason;
+  uint8_t profileSlot;
+  uint8_t flags;
+  uint8_t graphCount;
+  uint8_t graphSamples[ANALYSIS_GRAPH_COLUMNS];
+} tWifiHistoryRecord;
 #endif
 
 static_assert(EEPROM_ADDRESS_PROFILE_BASE + (PROFILE_COUNT * sizeof(tCartridgeProfile)) <=
@@ -1057,6 +1090,11 @@ static uint32_t g_R4WifiClientDeadline = 0;
 static uint32_t g_R4WifiConnectDeadline = 0;
 static uint32_t g_R4WifiRestartTime = 0;
 static uint32_t g_R4WifiStatusCheckTime = 0;
+static tWifiHistoryRecord g_R4WifiHistory[WIFI_HISTORY_RECORD_COUNT];
+static uint16_t g_R4WifiHistoryNextId = 1;
+static uint8_t g_R4WifiHistoryHead = 0;
+static uint8_t g_R4WifiHistoryCount = 0;
+static bool g_R4WifiHistoryCaptureActive = false;
 #endif
 
 #if NZHS_PLATFORM_UNO_R3
@@ -1260,6 +1298,16 @@ static void r4SendWifiStatus(WiFiClient &client, int16_t const temperature,
                              uint16_t const casesAnnealed,
                              bool const fanIsOn);
 static void r4SendWifiCurve(WiFiClient &client);
+static void r4SendWifiHistory(WiFiClient &client);
+static void r4SendWifiHistoryCurve(WiFiClient &client, uint16_t const id);
+static void r4SendWifiHistoryCsv(WiFiClient &client, uint16_t const id);
+static char const * r4WifiHistoryReasonName(uint8_t const reason);
+static tWifiHistoryRecord const * r4FindWifiHistory(uint16_t const id);
+static void r4FinalizeGraphCapture(void);
+static void r4StoreWifiHistory(tWifiHistoryReason const reason,
+                               bool const analysis,
+                               bool const matchValid);
+static void r4FinishAnnealHistory(tWifiHistoryReason const reason);
 static void r4HandleWifiRequest(WiFiClient &client,
                                 int16_t const temperature,
                                 uint16_t const current_ma,
@@ -2095,16 +2143,18 @@ static void r4UpdateMatrixDebug(int16_t const temperature)
 static const char R4_WIFI_MONITOR_HTML[] = R"HTML(<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>NZHS Annealer Monitor</title><link rel="icon" href="/favicon.ico"><link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png"><link rel="manifest" href="/manifest.webmanifest"><meta name="theme-color" content="#080b10"><meta name="apple-mobile-web-app-capable" content="yes"><meta name="apple-mobile-web-app-status-bar-style" content="black-translucent"><meta name="apple-mobile-web-app-title" content="Annealer"><style>
-:root{color-scheme:dark;font-family:system-ui,sans-serif}body{margin:0;background:#080b10;color:#edf6ff}main{max-width:900px;margin:auto;padding:18px}.head{display:flex;justify-content:space-between;align-items:baseline;gap:12px}h1{font-size:1.35rem;margin:0}.tag{color:#7fc8ff}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(135px,1fr));gap:10px;margin:16px 0}.card{background:#111a24;border:1px solid #24374a;border-radius:8px;padding:10px}.label{color:#8da4b8;font-size:.72rem;text-transform:uppercase}.value{font-size:1.35rem;margin-top:3px}canvas{width:100%;height:auto;background:#05080c;border:1px solid #24374a;border-radius:8px}.foot{color:#8da4b8;font-size:.8rem;margin-top:10px}.bad{color:#ff847c}.ok{color:#8ce99a}
+:root{color-scheme:dark;font-family:system-ui,sans-serif}body{margin:0;background:#080b10;color:#edf6ff}main{max-width:900px;margin:auto;padding:18px}.head{display:flex;justify-content:space-between;align-items:baseline;gap:12px}h1{font-size:1.35rem;margin:0}h2{font-size:1.05rem;margin:18px 0 8px}.tag{color:#7fc8ff}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(135px,1fr));gap:10px;margin:16px 0}.card{background:#111a24;border:1px solid #24374a;border-radius:8px;padding:10px}.label{color:#8da4b8;font-size:.72rem;text-transform:uppercase}.value{font-size:1.35rem;margin-top:3px}canvas{width:100%;height:auto;background:#05080c;border:1px solid #24374a;border-radius:8px}.foot{color:#8da4b8;font-size:.8rem;margin-top:10px}.bad{color:#ff847c}.ok{color:#8ce99a}.history{overflow-x:auto;border:1px solid #24374a;border-radius:8px}table{width:100%;border-collapse:collapse;font-size:.82rem}th,td{padding:8px;text-align:left;border-bottom:1px solid #24374a;white-space:nowrap}th{color:#8da4b8}.action{display:inline-block;background:#19344b;color:#edf6ff;border:1px solid #385b78;border-radius:5px;padding:5px 8px;text-decoration:none;font:inherit}
 </style></head><body><main><div class="head"><h1>NZHS Annealer</h1><span class="tag">read-only monitor</span></div>
 <div class="grid"><div class="card"><div class="label">State</div><div class="value" id="state">-</div></div><div class="card"><div class="label">Mode</div><div class="value" id="mode">-</div></div><div class="card"><div class="label">Current</div><div class="value" id="current">-</div></div><div class="card"><div class="label">Temperature</div><div class="value" id="temp">-</div></div><div class="card"><div class="label">Energy</div><div class="value" id="energy">-</div></div><div class="card"><div class="label">Peak</div><div class="value" id="peak">-</div></div><div class="card"><div class="label">Cases</div><div class="value" id="cases">-</div></div><div class="card"><div class="label">Remaining</div><div class="value" id="remaining">-</div></div></div>
-<canvas id="curve" width="800" height="320"></canvas><div class="foot" id="detail">Connecting...</div></main><script>
-const $=id=>document.getElementById(id),cv=$('curve'),cx=cv.getContext('2d');let curve={actual:[],reference:[],max_ma:12500,duration_ms:8000};
+<canvas id="curve" width="800" height="320"></canvas><div class="foot" id="graphmode">LIVE</div><div class="foot" id="detail">Connecting...</div><div class="head"><h2>Session history</h2><button class="action" onclick="live()">LIVE</button></div><div class="history"><table><thead><tr><th>#</th><th>Result</th><th>Time</th><th>Peak</th><th>Energy</th><th>Match</th><th>CSV</th></tr></thead><tbody id="history"><tr><td colspan="7">No retained results</td></tr></tbody></table></div></main><script>
+const $=id=>document.getElementById(id),cv=$('curve'),cx=cv.getContext('2d');let curve={actual:[],reference:[],max_ma:12500,duration_ms:8000},reviewId=null;
 function value(id,v,s=''){ $(id).textContent=v==null?'-':v+s }
 function draw(){let w=cv.width,h=cv.height,l=48,r=12,t=12,b=30;cx.clearRect(0,0,w,h);cx.strokeStyle='#24374a';cx.fillStyle='#8da4b8';cx.font='12px system-ui';for(let i=0;i<3;i++){let y=t+(h-t-b)*i/2;cx.beginPath();cx.moveTo(l,y);cx.lineTo(w-r,y);cx.stroke();cx.fillText((curve.max_ma*(2-i)/2000).toFixed(i?2:1)+'A',3,y+4)}for(let i=0;i<3;i++){let x=l+(w-l-r)*i/2;cx.fillText((curve.duration_ms*i/2000).toFixed(0)+'s',x-8,h-8)}function line(a,color,n){if(!a.length)return;cx.strokeStyle=color;cx.lineWidth=2;cx.beginPath();a.forEach((v,i)=>{let x=l+(w-l-r)*i/(n-1),y=t+(h-t-b)*(1-v/250);i?cx.lineTo(x,y):cx.moveTo(x,y)});cx.stroke()}line(curve.reference,'#718096',64);line(curve.actual,'#55b9ff',128)}
 async function status(){try{let s=await fetch('/api/status',{cache:'no-store'}).then(r=>r.json());value('state',s.state);value('mode',s.mode);value('current',s.current_a,' A');value('temp',s.temperature_c,' C');value('energy',s.energy_j,' J');value('peak',s.peak_a,' A');value('cases',s.cases);value('remaining',(s.remaining_ms/1000).toFixed(1),' s');$('detail').className='foot '+(s.fault?'bad':'ok');$('detail').textContent=(s.fault?'FAULT | ':'')+'Profile '+s.profile+' | match '+(s.match_pct==null?'-':s.match_pct+'%')+' | energy '+(s.energy_pct==null?'-':s.energy_pct+'%')+' | '+(s.cooldown_lock?'cooldown lock active':'monitoring')}catch(e){$('detail').className='foot bad';$('detail').textContent='Monitor unavailable'}}
-async function graph(){try{curve=await fetch('/api/curve',{cache:'no-store'}).then(r=>r.json());draw()}catch(e){}}
-status();graph();setInterval(status,500);setInterval(graph,1000);
+async function graph(){try{let u=reviewId==null?'/api/curve':'/api/history/'+reviewId;curve=await fetch(u,{cache:'no-store'}).then(r=>r.json());draw();$('graphmode').textContent=reviewId==null?'LIVE':'HISTORY #'+reviewId}catch(e){}}
+function live(){reviewId=null;graph()}function review(id){reviewId=id;graph()}
+async function refreshHistory(){try{let h=await fetch('/api/history',{cache:'no-store'}).then(r=>r.json());$('history').innerHTML=h.records.length?h.records.map(r=>`<tr><td><button class="action" onclick="review(${r.id})">${r.id}</button></td><td>${r.reason}</td><td>${(r.elapsed_ms/1000).toFixed(2)}s</td><td>${(r.peak_ma/1000).toFixed(1)}A</td><td>${(r.energy_mj/1000).toFixed(1)}J</td><td>${r.match_pct==null?'-':r.match_pct+'%'}</td><td><a class="action" href="/history/${r.id}.csv">CSV</a></td></tr>`).join(''):'<tr><td colspan="7">No retained results</td></tr>'}catch(e){}}
+status();graph();refreshHistory();setInterval(status,500);setInterval(graph,1000);setInterval(refreshHistory,2000);
 </script></body></html>)HTML";
 
 static const char R4_WIFI_SETUP_HTML_START[] = R"HTML(<!doctype html>
@@ -2244,7 +2294,8 @@ static void r4SendWifiStatus(WiFiClient &client, int16_t const temperature,
   bool const graphLive = state == STATE_ANALYSING ||
     (state == STATE_ANNEALING &&
      (g_UserSettings.stopType != PROFILE_STOP_TIME ||
-      (g_CasePerformance.referenceValid && CurrentSensorPresent)));
+      (g_CasePerformance.referenceValid && CurrentSensorPresent) ||
+      g_R4WifiHistoryCaptureActive));
   bool const graphAvailable = graphLive ||
     (state != STATE_ANNEALING && g_Analysis.graphValid);
   if(graphLive)
@@ -2370,6 +2421,252 @@ static void r4SendWifiCurve(WiFiClient &client)
     }
   }
   client.println(F("]}"));
+}
+
+/*---------------------------------------------------------------------------*/
+/*! @brief      Return the stable browser/CSV name for a history stop reason.
+*//*-------------------------------------------------------------------------*/
+static char const * r4WifiHistoryReasonName(uint8_t const reason)
+{
+  switch(reason)
+  {
+    case WIFI_HISTORY_ANALYSE: return "ANALYSE";
+    case WIFI_HISTORY_USER_ABORT: return "USER ABORT";
+    case WIFI_HISTORY_TIME: return "TIME";
+    case WIFI_HISTORY_ENERGY: return "ENERGY";
+    case WIFI_HISTORY_PEAK_DROP: return "PEAK DROP";
+    case WIFI_HISTORY_TIMEOUT: return "TIMEOUT";
+    case WIFI_HISTORY_OVERCURRENT: return "OVERCURRENT";
+    case WIFI_HISTORY_LOW_CURRENT: return "LOW CURRENT";
+    case WIFI_HISTORY_TEMP_ERROR: return "TEMP ERROR";
+    default: return "UNKNOWN";
+  }
+}
+
+/*---------------------------------------------------------------------------*/
+/*! @brief      Find a retained session record by its rollover-safe ID.
+*//*-------------------------------------------------------------------------*/
+static tWifiHistoryRecord const * r4FindWifiHistory(uint16_t const id)
+{
+  for(uint8_t offset = 0; offset < g_R4WifiHistoryCount; offset++)
+  {
+    uint8_t const index =
+      (g_R4WifiHistoryHead + WIFI_HISTORY_RECORD_COUNT - 1 - offset) %
+      WIFI_HISTORY_RECORD_COUNT;
+    if(g_R4WifiHistory[index].id == id)
+    {
+      return &g_R4WifiHistory[index];
+    }
+  }
+  return NULL;
+}
+
+/*---------------------------------------------------------------------------*/
+/*! @brief      Finalise aggregate fields for any shared graph capture.
+*//*-------------------------------------------------------------------------*/
+static void r4FinalizeGraphCapture(void)
+{
+  g_Analysis.elapsedTime_ms = millis() - g_Analysis.startTime;
+  if(g_Analysis.elapsedTime_ms > ANALYSIS_DURATION_MS)
+  {
+    g_Analysis.elapsedTime_ms = ANALYSIS_DURATION_MS;
+  }
+  g_Analysis.graphValid = g_Analysis.graphColumn != UINT8_MAX;
+}
+
+/*---------------------------------------------------------------------------*/
+/*! @brief      Copy the current graph and aggregates into the RAM ring.
+*//*-------------------------------------------------------------------------*/
+static void r4StoreWifiHistory(tWifiHistoryReason const reason,
+                               bool const analysis,
+                               bool const matchValid)
+{
+  if(!g_Analysis.graphValid)
+  {
+    return;
+  }
+  tWifiHistoryRecord * const record = &g_R4WifiHistory[g_R4WifiHistoryHead];
+  memset(record, 0, sizeof(*record));
+  record->completedAt_ms = millis();
+  record->inputEnergy_mJ = g_Analysis.inputEnergy_mJ;
+  record->id = g_R4WifiHistoryNextId++;
+  if(g_R4WifiHistoryNextId == 0) g_R4WifiHistoryNextId = 1;
+  record->elapsedTime_ms = g_Analysis.elapsedTime_ms;
+  record->peakCurrent_ma = g_Analysis.peakCurrent_ma;
+  record->reason = reason;
+  record->profileSlot = matchValid ? g_CasePerformance.resultSlot :
+                                     WIFI_HISTORY_NO_PROFILE;
+  record->flags = (analysis ? WIFI_HISTORY_FLAG_ANALYSIS : 0) |
+                  (matchValid ? WIFI_HISTORY_FLAG_MATCH : 0);
+  if(matchValid)
+  {
+    record->matchPercent = g_CasePerformance.matchPercent;
+    record->energyPercent = g_CasePerformance.energyPercent;
+  }
+  record->graphCount = g_Analysis.graphColumn == UINT8_MAX ? 0 :
+                       g_Analysis.graphColumn + 1;
+  memcpy(record->graphSamples, g_Analysis.graphSamples, record->graphCount);
+
+  g_R4WifiHistoryHead = (g_R4WifiHistoryHead + 1) % WIFI_HISTORY_RECORD_COUNT;
+  if(g_R4WifiHistoryCount < WIFI_HISTORY_RECORD_COUNT)
+  {
+    g_R4WifiHistoryCount++;
+  }
+}
+
+/*---------------------------------------------------------------------------*/
+/*! @brief      Finalise a normal anneal capture and retain it once.
+*//*-------------------------------------------------------------------------*/
+static void r4FinishAnnealHistory(tWifiHistoryReason const reason)
+{
+  bool const hasCapture =
+    (g_CasePerformance.referenceValid && CurrentSensorPresent) ||
+    g_R4WifiHistoryCaptureActive;
+  if(!hasCapture)
+  {
+    return;
+  }
+  if(g_CasePerformance.referenceValid && CurrentSensorPresent)
+  {
+    if(!g_CasePerformance.currentCycleCompared)
+    {
+      finishCasePerformance();
+    }
+  }
+  else if(g_R4WifiHistoryCaptureActive)
+  {
+    r4FinalizeGraphCapture();
+    g_Analysis.graphIsAnalysis = false;
+  }
+  r4StoreWifiHistory(reason, false,
+                     g_CasePerformance.currentCycleCompared);
+  g_R4WifiHistoryCaptureActive = false;
+}
+
+/*---------------------------------------------------------------------------*/
+/*! @brief      Serve retained session summaries, newest first.
+*//*-------------------------------------------------------------------------*/
+static void r4SendWifiHistory(WiFiClient &client)
+{
+  r4SendWifiHeaders(client, "application/json");
+  client.print(F("{\"count\":"));
+  client.print(g_R4WifiHistoryCount);
+  client.print(F(",\"capacity\":"));
+  client.print(WIFI_HISTORY_RECORD_COUNT);
+  client.print(F(",\"records\":["));
+  for(uint8_t offset = 0; offset < g_R4WifiHistoryCount; offset++)
+  {
+    uint8_t const index =
+      (g_R4WifiHistoryHead + WIFI_HISTORY_RECORD_COUNT - 1 - offset) %
+      WIFI_HISTORY_RECORD_COUNT;
+    tWifiHistoryRecord const * const record = &g_R4WifiHistory[index];
+    if(offset) client.write(',');
+    client.print(F("{\"id\":"));
+    client.print(record->id);
+    client.print(F(",\"reason\":\""));
+    client.print(r4WifiHistoryReasonName(record->reason));
+    client.print(F("\",\"elapsed_ms\":"));
+    client.print(record->elapsedTime_ms);
+    client.print(F(",\"energy_mj\":"));
+    client.print(record->inputEnergy_mJ);
+    client.print(F(",\"peak_ma\":"));
+    client.print(record->peakCurrent_ma);
+    client.print(F(",\"analysis\":"));
+    client.print(record->flags & WIFI_HISTORY_FLAG_ANALYSIS ? F("true") : F("false"));
+    client.print(F(",\"profile\":"));
+    if(record->profileSlot == WIFI_HISTORY_NO_PROFILE) client.print(F("null"));
+    else client.print(record->profileSlot + 1);
+    client.print(F(",\"match_pct\":"));
+    if(record->flags & WIFI_HISTORY_FLAG_MATCH) client.print(record->matchPercent);
+    else client.print(F("null"));
+    client.print(F(",\"energy_pct\":"));
+    if(record->flags & WIFI_HISTORY_FLAG_MATCH) client.print(record->energyPercent);
+    else client.print(F("null"));
+    client.write('}');
+  }
+  client.println(F("]}"));
+}
+
+/*---------------------------------------------------------------------------*/
+/*! @brief      Serve one retained graph using the live-graph JSON schema.
+*//*-------------------------------------------------------------------------*/
+static void r4SendWifiHistoryCurve(WiFiClient &client, uint16_t const id)
+{
+  tWifiHistoryRecord const * const record = r4FindWifiHistory(id);
+  if(!record)
+  {
+    r4SendWifiHeaders(client, "text/plain", 404);
+    client.println(F("History record not found"));
+    return;
+  }
+  r4SendWifiHeaders(client, "application/json");
+  client.print(F("{\"duration_ms\":"));
+  client.print(ANALYSIS_DURATION_MS);
+  client.print(F(",\"max_ma\":"));
+  client.print(ANALYSIS_GRAPH_MAX_CURRENT_MA);
+  client.print(F(",\"actual\":["));
+  for(uint8_t sample = 0; sample < record->graphCount; sample++)
+  {
+    if(sample) client.write(',');
+    client.print(record->graphSamples[sample]);
+  }
+  client.print(F("],\"reference\":["));
+  if(record->profileSlot != WIFI_HISTORY_NO_PROFILE &&
+     isProfileReferenceValid(record->profileSlot))
+  {
+    for(uint8_t sample = 0; sample < PROFILE_REFERENCE_SAMPLE_COUNT; sample++)
+    {
+      if(sample) client.write(',');
+      client.print(readProfileReferenceSample(record->profileSlot, sample));
+    }
+  }
+  client.println(F("]}"));
+}
+
+/*---------------------------------------------------------------------------*/
+/*! @brief      Download one retained current trace as spreadsheet-ready CSV.
+*//*-------------------------------------------------------------------------*/
+static void r4SendWifiHistoryCsv(WiFiClient &client, uint16_t const id)
+{
+  tWifiHistoryRecord const * const record = r4FindWifiHistory(id);
+  if(!record)
+  {
+    r4SendWifiHeaders(client, "text/plain", 404);
+    client.println(F("History record not found"));
+    return;
+  }
+  client.println(F("HTTP/1.1 200 OK"));
+  client.println(F("Content-Type: text/csv"));
+  client.print(F("Content-Disposition: attachment; filename=annealer-"));
+  client.print(record->id);
+  client.println(F(".csv"));
+  client.println(F("Cache-Control: no-store"));
+  client.println(F("Connection: close"));
+  client.println();
+  client.println(F("id,reason,profile,elapsed_ms,energy_mJ,peak_mA,match_pct,sample_t_ms,current_mA"));
+  for(uint8_t sample = 0; sample < record->graphCount; sample++)
+  {
+    client.print(record->id);
+    client.write(',');
+    client.print(r4WifiHistoryReasonName(record->reason));
+    client.write(',');
+    if(record->profileSlot != WIFI_HISTORY_NO_PROFILE) client.print(record->profileSlot + 1);
+    client.write(',');
+    client.print(record->elapsedTime_ms);
+    client.write(',');
+    client.print(record->inputEnergy_mJ);
+    client.write(',');
+    client.print(record->peakCurrent_ma);
+    client.write(',');
+    if(record->flags & WIFI_HISTORY_FLAG_MATCH) client.print(record->matchPercent);
+    client.write(',');
+    client.print(((uint32_t)sample * ANALYSIS_DURATION_MS) /
+                 ANALYSIS_GRAPH_COLUMNS);
+    client.write(',');
+    client.println((uint16_t)record->graphSamples[sample] *
+                   ANALYSIS_GRAPH_CURRENT_STEP_MA);
+    if((sample & 0x0F) == 0) r4ResetWatchdog();
+  }
 }
 
 /*---------------------------------------------------------------------------*/
@@ -2761,6 +3058,40 @@ static void r4HandleWifiRequest(WiFiClient &client,
   {
     r4SendWifiCurve(client);
   }
+  else if(strcmp(method, "GET") == 0 && strcmp(requestTarget, "/api/history") == 0)
+  {
+    r4SendWifiHistory(client);
+  }
+  else if(strcmp(method, "GET") == 0 &&
+          strncmp(requestTarget, "/api/history/", 13) == 0)
+  {
+    char * end = NULL;
+    unsigned long const id = strtoul(requestTarget + 13, &end, 10);
+    if(id > 0 && id <= UINT16_MAX && end && *end == 0)
+    {
+      r4SendWifiHistoryCurve(client, id);
+    }
+    else
+    {
+      r4SendWifiHeaders(client, "text/plain", 404);
+      client.println(F("History record not found"));
+    }
+  }
+  else if(strcmp(method, "GET") == 0 &&
+          strncmp(requestTarget, "/history/", 9) == 0)
+  {
+    char * end = NULL;
+    unsigned long const id = strtoul(requestTarget + 9, &end, 10);
+    if(id > 0 && id <= UINT16_MAX && end && strcmp(end, ".csv") == 0)
+    {
+      r4SendWifiHistoryCsv(client, id);
+    }
+    else
+    {
+      r4SendWifiHeaders(client, "text/plain", 404);
+      client.println(F("History record not found"));
+    }
+  }
   else if(strcmp(method, "GET") == 0 &&
           (strcmp(requestTarget, "/") == 0 || strcmp(requestTarget, "/setup") == 0))
   {
@@ -2951,7 +3282,13 @@ void loop()
   if(g_SystemState != STATE_ANALYSING &&
      !(g_SystemState == STATE_ANNEALING &&
        (g_UserSettings.stopType != PROFILE_STOP_TIME ||
-        (g_CasePerformance.referenceValid && CurrentSensorPresent))))
+        (g_CasePerformance.referenceValid && CurrentSensorPresent)
+        #if NZHS_HAS_WIFI
+        || ((g_R4WifiConfig.monitorEnabled ||
+             g_R4WifiMode == R4_WIFI_DIRECT_MONITOR) &&
+            CurrentSensorPresent)
+        #endif
+        )))
   {
     temperature = readTemperature();
   }
@@ -3674,6 +4011,17 @@ void loop()
         g_AdaptiveAnneal.peakCurrent_ma = 0;
         g_AdaptiveAnneal.belowPeakSamples = 0;
         g_CasePerformance.currentCycleCompared = false;
+        #if NZHS_HAS_WIFI
+        g_R4WifiHistoryCaptureActive =
+          (g_R4WifiConfig.monitorEnabled ||
+           g_R4WifiMode == R4_WIFI_DIRECT_MONITOR) &&
+          CurrentSensorPresent &&
+          !g_CasePerformance.referenceValid;
+        if(g_R4WifiHistoryCaptureActive)
+        {
+          resetGraphCapture(currentTime, false);
+        }
+        #endif
         if(g_CasePerformance.referenceValid && CurrentSensorPresent)
         {
           beginCasePerformance(currentTime);
@@ -3698,6 +4046,13 @@ void loop()
         {
           turnAnnealerOff();
           turnStartStopLedOff();
+          #if NZHS_HAS_WIFI
+          if(g_CasePerformance.referenceValid)
+            recordCasePerformance(psuCurrent_ma, currentTime);
+          else if(g_R4WifiHistoryCaptureActive)
+            recordGraphCurrent(psuCurrent_ma, currentTime);
+          r4FinishAnnealHistory(WIFI_HISTORY_OVERCURRENT);
+          #endif
           updateSystemState(STATE_OVERCURRENT_WARNING);
           break;
         }
@@ -3708,6 +4063,12 @@ void loop()
         {
           recordCasePerformance(psuCurrent_ma, currentTime);
         }
+        #if NZHS_HAS_WIFI
+        else if(g_R4WifiHistoryCaptureActive)
+        {
+          recordGraphCurrent(psuCurrent_ma, currentTime);
+        }
+        #endif
 
         if(g_UserSettings.stopType != PROFILE_STOP_TIME)
         {
@@ -3771,6 +4132,9 @@ void loop()
             EEPROM.update(EEPROM_ADDRESS_AUTO_RESTART, 0);
             g_RunSafety.cooldownRestartPending = false;
             turnStartStopLedOff();
+            #if NZHS_HAS_WIFI
+            r4FinishAnnealHistory(WIFI_HISTORY_LOW_CURRENT);
+            #endif
             updateSystemState(STATE_LOW_CURRENT_WARNING);
             break;
           }
@@ -3782,14 +4146,27 @@ void loop()
           if(lowCurrentGuardFault(cycleAverageCurrent_ma))
           {
             turnStartStopLedOff();
+            #if NZHS_HAS_WIFI
+            r4FinishAnnealHistory(WIFI_HISTORY_LOW_CURRENT);
+            #endif
             updateSystemState(STATE_LOW_CURRENT_WARNING);
             break;
           }
         }
-        if(g_CasePerformance.referenceValid && CurrentSensorPresent)
-        {
-          finishCasePerformance();
-        }
+        #if NZHS_HAS_WIFI
+        tWifiHistoryReason historyReason = WIFI_HISTORY_TIME;
+        if(targetTimeoutPending) historyReason = WIFI_HISTORY_TIMEOUT;
+        else if(g_UserSettings.stopType == PROFILE_STOP_ENERGY)
+          historyReason = WIFI_HISTORY_ENERGY;
+        else if(g_UserSettings.stopType == PROFILE_STOP_PEAK_DROP)
+          historyReason = WIFI_HISTORY_PEAK_DROP;
+        r4FinishAnnealHistory(historyReason);
+        #else
+          if(g_CasePerformance.referenceValid && CurrentSensorPresent)
+          {
+            finishCasePerformance();
+          }
+        #endif
         g_RunSafety.completedAnnealCycles++;
         openDropGate();
         updateSystemState(STATE_DROPPING);
@@ -4203,7 +4580,13 @@ void loop()
                                    (g_SystemState == STATE_ANNEALING &&
                                     (g_UserSettings.stopType != PROFILE_STOP_TIME ||
                                      (g_CasePerformance.referenceValid &&
-                                      CurrentSensorPresent)));
+                                      CurrentSensorPresent)
+                                     #if NZHS_HAS_WIFI
+                                     || ((g_R4WifiConfig.monitorEnabled ||
+                                          g_R4WifiMode == R4_WIFI_DIRECT_MONITOR) &&
+                                         CurrentSensorPresent)
+                                     #endif
+                                     ));
   uint32_t const loopPeriod = fastCurrentSampling ? ANALYSIS_SAMPLE_PERIOD_MS : LOOP_TIME;
   while(!hasTimeElapsed(LoopStartTime + loopPeriod, millis())) // wait for the loop time to expire
   {
@@ -5068,6 +5451,10 @@ static void sampleAnalysisCurrent(uint32_t const currentTime)
   {
     turnAnnealerOff();
     turnStartStopLedOff();
+    #if NZHS_HAS_WIFI
+    r4FinalizeGraphCapture();
+    r4StoreWifiHistory(WIFI_HISTORY_OVERCURRENT, true, false);
+    #endif
     updateSystemState(STATE_OVERCURRENT_WARNING);
   }
 }
@@ -5187,6 +5574,10 @@ static void finishAnalysis(bool const aborted)
     g_Analysis.elapsedTime_ms = ANALYSIS_DURATION_MS;
   }
   g_Analysis.graphValid = g_Analysis.graphColumn != UINT8_MAX;
+  #if NZHS_HAS_WIFI
+  r4StoreWifiHistory(aborted ? WIFI_HISTORY_USER_ABORT : WIFI_HISTORY_ANALYSE,
+                     true, false);
+  #endif
   if(aborted)
   {
     Serial.print(F("ANALYSE,ABORT,reason=USER ABORT,t_ms="));
