@@ -54,18 +54,51 @@ in [R4_WIFI_MONITOR.md](R4_WIFI_MONITOR.md).
 - Confirm HBT remains readable while its bottom-row dot moves continuously.
 - Reset and confirm the matrix turns off, normal START behaviour returns, and
   no matrix timer remains allocated.
+- On the R4 WiFi, confirm Settings scrolls through RESTART, DUMP, WIFI and BACK;
+  confirm UP on WIFI opens MONITOR, SETUP and BACK and nested BACK returns to
+  WIFI in Settings.
+- With MONITOR off, select SETUP. Confirm `SETUP: ACTIVE`, connect to the open
+  `NZHS-Annealer-Setup` AP, browse to `http://192.168.4.1`, and submit valid LAN
+  credentials without exposing the password in Serial output.
+- On a bare R4 without the shield/OLED/buttons, send `S` at 115200 baud while
+  stopped and confirm it starts the same setup AP and saves the same persistent
+  configuration without requiring a special firmware build.
+- Send `I` before, during and after connection. Confirm it reports OFF,
+  CONNECTING or LAN as applicable and never presents `0.0.0.0` as a usable IP.
+- On the OLED, select WIFI `RESET >`; confirm the reset screen defaults to
+  `BACK >`, BACK preserves credentials, and `CONFIRM >` clears credentials,
+  disables monitoring and stops WiFi. Repeat on a bare board with stopped-state
+  Serial `X`, then send `I` and confirm `WIFI STATUS: OFF IP=--`.
+- Confirm the setup page acknowledges the save, the setup AP closes, the R4
+  joins the normal network, and Info eventually displays `WIFI: LAN` and a
+  reachable IP. Reset and confirm the connection and monitor-enabled setting
+  persist.
+- Turn MONITOR off and confirm the radio stops while the credentials remain;
+  turn it on and confirm the saved LAN is reused without another setup.
+- Submit deliberately invalid/unreachable credentials. After 15 seconds,
+  confirm the open setup AP returns and valid replacement credentials can be
+  saved. Confirm malformed or oversized HTTP setup requests fail closed.
+- Disconnect the normal access point after a successful connection, restore it,
+  and confirm reconnection. Repeat during Analyse or auto-feed operation and
+  confirm reconfiguration is deferred until the timing-critical state ends.
 - Reset, wait for the stopped screen, and send `W` at 115200 baud. Confirm the
-  open `NZHS-Annealer` access point starts and Serial prints its local address.
+  non-persistent open `NZHS-Annealer` direct monitor AP starts without changing
+  the saved monitor setting or credentials.
 - Connect a phone or computer and confirm `/`, `/api/status`, and `/api/curve`
   load. Confirm there are no browser controls for START, gate, feeder, settings,
   profiles, upload, or firmware update.
+- Confirm `/favicon.ico`, `/apple-touch-icon.png`, `/icon-192.png`,
+  `/icon-512.png`, and `/manifest.webmanifest` load with the expected content
+  types. Add the dashboard to an iOS Home Screen and confirm the MGNZ-derived
+  icon and standalone dark presentation are used.
 - Exercise stopped, Analyse, normal anneal, dropping, reloading, cooldown and a
   fault state. Confirm state, sensor values, case count, remaining time and
   actual/reference curves update without stale live energy values.
 - Generate browser traffic during Analyse and auto-feed operation. Compare the
   25 ms Serial sample timestamps, feeder timing and safety trips with WiFi off;
   confirm no material timing regression.
-- While WiFi is active, send `M` and confirm matrix diagnostics are refused.
+- While any WiFi mode is active or connecting, send `M` and confirm matrix
+  diagnostics are refused.
   Reset, enter matrix diagnostics with `M`, send `W`, and confirm WiFi startup
   is refused. Reset and confirm both optional features are inactive.
 - Only reconnect the high-current output after all safe-state, gate and feeder

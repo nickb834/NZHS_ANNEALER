@@ -280,9 +280,11 @@ ADC rail measurement, and byte-oriented EEPROM writes. The R4 backend uses the
 Servo library, a Renesas `FspTimer` callback, the RA4M1 watchdog and reset
 registers, the R4 ADC API, and batched virtual-EEPROM writes.
 
-Both targets use the same pins, menus, profile format, safety rules, and first
-1024 EEPROM addresses. R4-only code is excluded from the R3 build, and the R3
-firmware remains constrained by its 32 KB flash limit.
+Both targets use the same shield pins, core menus, profile format and safety
+rules. The R4 WiFi adds its own Settings and Info rows and stores WiFi data in
+the otherwise-unused EEPROM tail from address 768; profile/reference storage
+still ends before that address. R4-only code is excluded from the R3 build, and
+the R3 firmware remains constrained by its 32 KB flash limit.
 
 The R4 build compiles successfully, but installation on the annealer remains
 hardware-validation work. Before energising the coil, verify the safe boot pin
@@ -305,17 +307,31 @@ legend, DS18B20 wiring, safety behaviour and troubleshooting.
 
 ### Experimental Uno R4 WiFi monitor
 
-The R4 WiFi build also contains an opt-in, read-only browser monitor. While the
-firmware is stopped, send `W` at 115200 baud. Connect to the open
-`NZHS-Annealer` access point and open the IP address printed over Serial
-(normally `http://192.168.4.1`). The page shows operating state, current,
-temperature, energy, peak current, case count, time remaining, and the live or
-retained current/reference curves.
+The R4 WiFi build contains an opt-in, read-only browser monitor. Open
+`SETTINGS >`, select `WIFI >`, then use `SETUP >` to start the temporary open
+`NZHS-Annealer-Setup` access point. Browse to `http://192.168.4.1`, enter the
+normal LAN credentials, and the annealer will join that network. The final Info
+rows show connection state and IP address. `MONITOR: ON/OFF` controls whether
+the saved network is used after reset.
 
-This first implementation deliberately has no remote START, gate, feeder,
-profile-write, upload, or firmware-update controls. It is non-persistent and
-turns off on reset. Matrix diagnostics and the WiFi monitor cannot be active at
-the same time. See the [R4 WiFi monitor guide](docs/R4_WIFI_MONITOR.md).
+The page shows operating state, current, temperature, energy, peak current,
+case count, time remaining, and live or retained current/reference curves. If
+the saved network cannot be reached within 15 seconds, the setup access point
+returns so the credentials can be corrected. Credentials are stored
+unencrypted in the R4 EEPROM-backed storage.
+
+The dashboard serves an MGNZ-derived favicon, 180 px Apple touch icon and web
+app manifest, allowing it to be saved as an iOS/Android Home Screen shortcut.
+
+The monitor deliberately has no remote START, gate, feeder, profile-write,
+upload, or firmware-update controls. Sending `W` at 115200 baud while stopped
+still starts the non-persistent direct `NZHS-Annealer` monitor AP for bench
+work; sending `S` starts the persistent setup AP on a bare R4 without the
+OLED/buttons, and `I` prints the current WiFi state/IP over USB. The OLED
+`RESET >` confirmation or Serial `X` erases saved credentials and
+disables monitoring. Matrix diagnostics and all WiFi modes are mutually
+exclusive. See the
+[R4 WiFi monitor guide](docs/R4_WIFI_MONITOR.md).
 
 ## Simulator
 
@@ -340,6 +356,14 @@ The detailed release/hardware validation checklist is in
 [docs/TESTING.md](docs/TESTING.md).
 
 ## Version history
+
+SW version 4.2.0 (Uno R4 WiFi)
+
+- Added visible WiFi monitor and setup controls under Settings.
+- Added persistent LAN credentials, automatic reconnect and setup-AP fallback.
+- Added WiFi connection state and IP address to Info while preserving the
+  read-only browser safety boundary.
+- Added MGNZ-derived browser and Home Screen shortcut icons.
 
 SW version 4.1.0
 
