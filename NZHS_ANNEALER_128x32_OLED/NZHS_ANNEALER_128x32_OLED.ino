@@ -11,8 +11,6 @@
 #include <avr/io.h>
 #include <avr/wdt.h>
 #include <util/atomic.h>
-#include <Adafruit_GFX.h>
-#include <Adafruit_SSD1306.h>
 #include <EEPROM.h>
 #include <OneWire.h>
 #include <DallasTemperature.h>
@@ -108,6 +106,12 @@
 #define RIGHT_PANEL_X 56
 #define ANALYSIS_ENERGY_X 92
 
+// Monochrome drawing modes retained from the Adafruit SSD1306 API so the
+// existing screen code remains unchanged.
+#define BLACK 0
+#define WHITE 1
+#define SSD1306_INVERSE 2
+
 #ifndef FPSTR
 #define FPSTR(address) (reinterpret_cast<const __FlashStringHelper *>(address))
 #endif
@@ -139,61 +143,301 @@ static const char * const STOPPED_MENU_TEXT[] PROGMEM = {
   TEXT_DIAGNOSTICS_ITEM
 };
 
-// The annealer only supports a 128x32 I2C panel. Keeping its framebuffer in
-// the object avoids a hidden 512-byte heap allocation, while the fixed init
-// sequence omits unused SPI/multi-panel code and the unseen Adafruit splash.
-class AnnealerDisplay : public Adafruit_SSD1306
+// Exact glyph columns from the Adafruit GFX classic fixed-space font. The
+// firmware only emits ASCII 32-95, lowercase 's', and its historical degree
+// character (input byte 248 maps to CP437 glyph 249). Each glyph remains the
+// original five columns by eight rows; the renderer supplies column six.
+static const uint8_t annealerFont[] PROGMEM = {
+  0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x5F, 0x00, 0x00, 0x00, 0x07, 0x00, 0x07, 0x00,
+  0x14, 0x7F, 0x14, 0x7F, 0x14, 0x24, 0x2A, 0x7F, 0x2A, 0x12, 0x23, 0x13, 0x08, 0x64, 0x62,
+  0x36, 0x49, 0x56, 0x20, 0x50, 0x00, 0x08, 0x07, 0x03, 0x00, 0x00, 0x1C, 0x22, 0x41, 0x00,
+  0x00, 0x41, 0x22, 0x1C, 0x00, 0x2A, 0x1C, 0x7F, 0x1C, 0x2A, 0x08, 0x08, 0x3E, 0x08, 0x08,
+  0x00, 0x80, 0x70, 0x30, 0x00, 0x08, 0x08, 0x08, 0x08, 0x08, 0x00, 0x00, 0x60, 0x60, 0x00,
+  0x20, 0x10, 0x08, 0x04, 0x02, 0x3E, 0x51, 0x49, 0x45, 0x3E, 0x00, 0x42, 0x7F, 0x40, 0x00,
+  0x72, 0x49, 0x49, 0x49, 0x46, 0x21, 0x41, 0x49, 0x4D, 0x33, 0x18, 0x14, 0x12, 0x7F, 0x10,
+  0x27, 0x45, 0x45, 0x45, 0x39, 0x3C, 0x4A, 0x49, 0x49, 0x31, 0x41, 0x21, 0x11, 0x09, 0x07,
+  0x36, 0x49, 0x49, 0x49, 0x36, 0x46, 0x49, 0x49, 0x29, 0x1E, 0x00, 0x00, 0x14, 0x00, 0x00,
+  0x00, 0x40, 0x34, 0x00, 0x00, 0x00, 0x08, 0x14, 0x22, 0x41, 0x14, 0x14, 0x14, 0x14, 0x14,
+  0x00, 0x41, 0x22, 0x14, 0x08, 0x02, 0x01, 0x59, 0x09, 0x06, 0x3E, 0x41, 0x5D, 0x59, 0x4E,
+  0x7C, 0x12, 0x11, 0x12, 0x7C, 0x7F, 0x49, 0x49, 0x49, 0x36, 0x3E, 0x41, 0x41, 0x41, 0x22,
+  0x7F, 0x41, 0x41, 0x41, 0x3E, 0x7F, 0x49, 0x49, 0x49, 0x41, 0x7F, 0x09, 0x09, 0x09, 0x01,
+  0x3E, 0x41, 0x41, 0x51, 0x73, 0x7F, 0x08, 0x08, 0x08, 0x7F, 0x00, 0x41, 0x7F, 0x41, 0x00,
+  0x20, 0x40, 0x41, 0x3F, 0x01, 0x7F, 0x08, 0x14, 0x22, 0x41, 0x7F, 0x40, 0x40, 0x40, 0x40,
+  0x7F, 0x02, 0x1C, 0x02, 0x7F, 0x7F, 0x04, 0x08, 0x10, 0x7F, 0x3E, 0x41, 0x41, 0x41, 0x3E,
+  0x7F, 0x09, 0x09, 0x09, 0x06, 0x3E, 0x41, 0x51, 0x21, 0x5E, 0x7F, 0x09, 0x19, 0x29, 0x46,
+  0x26, 0x49, 0x49, 0x49, 0x32, 0x03, 0x01, 0x7F, 0x01, 0x03, 0x3F, 0x40, 0x40, 0x40, 0x3F,
+  0x1F, 0x20, 0x40, 0x20, 0x1F, 0x3F, 0x40, 0x38, 0x40, 0x3F, 0x63, 0x14, 0x08, 0x14, 0x63,
+  0x03, 0x04, 0x78, 0x04, 0x03, 0x61, 0x59, 0x49, 0x4D, 0x43, 0x00, 0x7F, 0x41, 0x41, 0x41,
+  0x02, 0x04, 0x08, 0x10, 0x20, 0x00, 0x41, 0x41, 0x41, 0x7F, 0x04, 0x02, 0x01, 0x02, 0x04,
+  0x40, 0x40, 0x40, 0x40, 0x40,
+  // Lowercase 's'.
+  0x48, 0x54, 0x54, 0x54, 0x24,
+  // Degree symbol as rendered by Adafruit GFX for input byte 248.
+  0x00, 0x00, 0x18, 0x18, 0x00,
+};
+
+// Minimal fixed 128x32 I2C display implementation. It deliberately preserves
+// the subset of the Adafruit GFX/SSD1306 API used by this sketch while omitting
+// unused panel sizes, SPI, rotation, scrolling, proportional fonts and generic
+// drawing primitives.
+class AnnealerDisplay : public Print
 {
 public:
   AnnealerDisplay(uint8_t width, uint8_t height, TwoWire *twi, int8_t resetPin,
                   uint32_t activeClock, uint32_t idleClock)
-    : Adafruit_SSD1306(width, height, twi, resetPin, activeClock, idleClock) {}
-
-  // Prevent the base destructor from trying to free the statically owned
-  // framebuffer if program shutdown is ever reached.
-  ~AnnealerDisplay() { buffer = NULL; }
+    : wire(twi), wireClk(activeClock), restoreClk(idleClock), cursor_x(0),
+      cursor_y(0), textsize(1), textcolor(WHITE), textbgcolor(WHITE), wrap(true)
+  {
+    (void)width;
+    (void)height;
+    (void)resetPin;
+  }
 
   bool beginFixed128x32I2C(void)
   {
-    if(!buffer)
-    {
-      buffer = framebuffer;
-    }
-
     clearDisplay();
-    vccstate = SSD1306_SWITCHCAPVCC;
-    i2caddr = DISPLAY_ADDRESS;
-    contrast = 0x8F;
     wire->begin();
 #ifdef WIRE_HAS_TIMEOUT
     wire->setWireTimeout(25000, true);
 #endif
     wire->setClock(wireClk);
     static const uint8_t PROGMEM commands[] = {
-      SSD1306_DISPLAYOFF,
-      SSD1306_SETDISPLAYCLOCKDIV, 0x80,
-      SSD1306_SETMULTIPLEX, SCREEN_HEIGHT - 1,
-      SSD1306_SETDISPLAYOFFSET, 0,
-      SSD1306_SETSTARTLINE,
-      SSD1306_CHARGEPUMP, 0x14,
-      SSD1306_MEMORYMODE, 0,
-      SSD1306_SEGREMAP | 1,
-      SSD1306_COMSCANDEC,
-      SSD1306_SETCOMPINS, 0x02,
-      SSD1306_SETCONTRAST, 0x8F,
-      SSD1306_SETPRECHARGE, 0xF1,
-      SSD1306_SETVCOMDETECT, 0x40,
-      SSD1306_DISPLAYALLON_RESUME,
-      SSD1306_NORMALDISPLAY,
-      SSD1306_DEACTIVATE_SCROLL,
-      SSD1306_DISPLAYON
+      0xAE,             // display off
+      0xD5, 0x80,       // clock divide
+      0xA8, 0x1F,       // 32 multiplex rows
+      0xD3, 0x00,       // display offset
+      0x40,             // start line
+      0x8D, 0x14,       // charge pump
+      0x20, 0x00,       // horizontal memory mode
+      0xA1,             // segment remap
+      0xC8,             // COM scan direction
+      0xDA, 0x02,       // COM pins for 128x32
+      0x81, 0x8F,       // contrast
+      0xD9, 0xF1,       // precharge
+      0xDB, 0x40,       // VCOM detect
+      0xA4,             // display follows RAM
+      0xA6,             // normal display
+      0x2E,             // deactivate scrolling
+      0xAF              // display on
     };
-    ssd1306_commandList(commands, sizeof(commands));
+    sendCommandList(commands, sizeof(commands));
     wire->setClock(restoreClk);
     return true;
   }
 
+  void clearDisplay(void)
+  {
+    memset(framebuffer, 0, sizeof(framebuffer));
+  }
+
+  void display(void)
+  {
+    static const uint8_t PROGMEM addressCommands[] = {
+      0x21, 0x00, 0x7F, // columns 0-127
+      0x22, 0x00, 0x03  // pages 0-3
+    };
+    wire->setClock(wireClk);
+    sendCommandList(addressCommands, sizeof(addressCommands));
+    uint16_t offset = 0;
+    while(offset < sizeof(framebuffer))
+    {
+      wire->beginTransmission(DISPLAY_ADDRESS);
+      wire->write(0x40); // data stream
+      uint8_t count = 0;
+      // Wire's 32-byte AVR buffer leaves 31 bytes after the data-control byte.
+      while(count < (BUFFER_LENGTH - 1) && offset < sizeof(framebuffer))
+      {
+        wire->write(framebuffer[offset++]);
+        count++;
+      }
+      wire->endTransmission();
+    }
+    wire->setClock(restoreClk);
+  }
+
+  void invertDisplay(bool invert)
+  {
+    wire->setClock(wireClk);
+    wire->beginTransmission(DISPLAY_ADDRESS);
+    wire->write(0x00);
+    wire->write(invert ? 0xA7 : 0xA6);
+    wire->endTransmission();
+    wire->setClock(restoreClk);
+  }
+
+  void drawPixel(int16_t x, int16_t y, uint16_t color)
+  {
+    if(x < 0 || x >= SCREEN_WIDTH || y < 0 || y >= SCREEN_HEIGHT)
+    {
+      return;
+    }
+    uint8_t * const pixel = &framebuffer[x + (y >> 3) * SCREEN_WIDTH];
+    uint8_t const mask = 1 << (y & 7);
+    if(color == WHITE)
+    {
+      *pixel |= mask;
+    }
+    else if(color == BLACK)
+    {
+      *pixel &= ~mask;
+    }
+    else
+    {
+      *pixel ^= mask;
+    }
+  }
+
+  void drawFastVLine(int16_t x, int16_t y, int16_t height, uint16_t color)
+  {
+    while(height-- > 0)
+    {
+      drawPixel(x, y++, color);
+    }
+  }
+
+  void fillRect(int16_t x, int16_t y, int16_t width, int16_t height,
+                uint16_t color)
+  {
+    for(int16_t column = 0; column < width; column++)
+    {
+      drawFastVLine(x + column, y, height, color);
+    }
+  }
+
+  void drawBitmap(int16_t x, int16_t y, const uint8_t *bitmap,
+                  int16_t width, int16_t height, uint16_t color)
+  {
+    uint8_t const byteWidth = (width + 7) / 8;
+    for(int16_t row = 0; row < height; row++)
+    {
+      for(int16_t column = 0; column < width; column++)
+      {
+        uint8_t const bits = pgm_read_byte(bitmap + row * byteWidth + (column >> 3));
+        if(bits & (0x80 >> (column & 7)))
+        {
+          drawPixel(x + column, y + row, color);
+        }
+      }
+    }
+  }
+
+  void setCursor(int16_t x, int16_t y)
+  {
+    cursor_x = x;
+    cursor_y = y;
+  }
+
+  void setTextSize(uint8_t size)
+  {
+    textsize = size ? size : 1;
+  }
+
+  void setTextColor(uint16_t color)
+  {
+    textcolor = color;
+    textbgcolor = color;
+  }
+
+  void setTextColor(uint16_t color, uint16_t background)
+  {
+    textcolor = color;
+    textbgcolor = background;
+  }
+
+  using Print::write;
+  size_t write(uint8_t character) override
+  {
+    if(character == '\n')
+    {
+      cursor_x = 0;
+      cursor_y += textsize * 8;
+    }
+    else if(character != '\r')
+    {
+      if(wrap && cursor_x + textsize * 6 > SCREEN_WIDTH)
+      {
+        cursor_x = 0;
+        cursor_y += textsize * 8;
+      }
+      drawCharacter(cursor_x, cursor_y, character);
+      cursor_x += textsize * 6;
+    }
+    return 1;
+  }
+
 private:
+  void sendCommandList(const uint8_t *commands, uint8_t count)
+  {
+    wire->beginTransmission(DISPLAY_ADDRESS);
+    wire->write(0x00);
+    while(count--)
+    {
+      wire->write(pgm_read_byte(commands++));
+    }
+    wire->endTransmission();
+  }
+
+  uint16_t glyphOffset(uint8_t character) const
+  {
+    if(character >= 32 && character <= 95)
+    {
+      return (uint16_t)(character - 32) * 5;
+    }
+    if(character == 's')
+    {
+      return 320;
+    }
+    if(character == 248)
+    {
+      return 325;
+    }
+    return (uint16_t)('?' - 32) * 5;
+  }
+
+  void drawCharacter(int16_t x, int16_t y, uint8_t character)
+  {
+    if(x >= SCREEN_WIDTH || y >= SCREEN_HEIGHT ||
+       x + 6 * textsize - 1 < 0 || y + 8 * textsize - 1 < 0)
+    {
+      return;
+    }
+
+    uint16_t const offset = glyphOffset(character);
+    for(uint8_t column = 0; column < 5; column++)
+    {
+      uint8_t bits = pgm_read_byte(&annealerFont[offset + column]);
+      for(uint8_t row = 0; row < 8; row++, bits >>= 1)
+      {
+        uint16_t const color = bits & 1 ? textcolor : textbgcolor;
+        if((bits & 1) || textbgcolor != textcolor)
+        {
+          if(textsize == 1)
+          {
+            drawPixel(x + column, y + row, color);
+          }
+          else
+          {
+            fillRect(x + column * textsize, y + row * textsize,
+                     textsize, textsize, color);
+          }
+        }
+      }
+    }
+    if(textbgcolor != textcolor)
+    {
+      fillRect(x + 5 * textsize, y, textsize, 8 * textsize, textbgcolor);
+    }
+  }
+
+  TwoWire *wire;
+  uint32_t wireClk;
+  uint32_t restoreClk;
+  int16_t cursor_x;
+  int16_t cursor_y;
+  uint8_t textsize;
+  uint8_t textcolor;
+  uint8_t textbgcolor;
+  bool wrap;
   uint8_t framebuffer[SCREEN_WIDTH * ((SCREEN_HEIGHT + 7) / 8)];
 };
 
