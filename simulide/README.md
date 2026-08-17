@@ -31,7 +31,9 @@ button grounds its input.
    firmware changes. The simulator must use this exact production artifact:
 
    ```sh
-   arduino-cli compile --fqbn arduino:avr:uno --export-binaries NZHS_ANNEALER_128x32_OLED
+   arduino-cli compile --fqbn arduino:avr:uno \
+      --build-path NZHS_ANNEALER_128x32_OLED/build/arduino.avr.uno \
+      --export-binaries NZHS_ANNEALER_128x32_OLED
    cp NZHS_ANNEALER_128x32_OLED/build/arduino.avr.uno/NZHS_ANNEALER_128x32_OLED.ino.hex \
       NZHS_ANNEALER_128x32_OLED/NZHS_ANNEALER_128x32_OLED.ino.standard.hex
    ```
@@ -52,8 +54,11 @@ button grounds its input.
 
 - Navigate all home and submenu paths; confirm each visible `BACK >` returns
   to the originating home selection.
-- Create, rename, load, and delete profiles, including the one-second
-  `SAVED` acknowledgement.
+- Create, rename, load, and delete profiles, including the `LOADED`, `SAVED`,
+  `DELETED`, `EMPTY`, and `NO DATA` acknowledgements.
+- Run Analyse, save a reference, load its profile, and exercise reference and
+  comparison PERFORMANCE screens. Save EEPROM data before reloading firmware
+  if the simulated reference needs to survive the reload.
 - Use the potentiometer to create an accepted-current baseline and then a
   lower reading to exercise the low-current stop path.
 - Observe the LEDs during annealing, dropping, cooldown, and free-run reload.
@@ -66,3 +71,9 @@ button grounds its input.
 This harness does **not** simulate the real ZVS/coil, PSU, ACS712 electrical
 characteristics, gate mechanics, or feeder mechanics. Hardware testing remains
 required for electrical safety, feeder/gate timing, and reset/noise behaviour.
+
+It also models only the AVR-based Uno R3. SimulIDE 1.1.0 has no Renesas RA4M1
+model and cannot emulate either the Uno R4 Minima or the combined RA4M1 and
+ESP32-S3 architecture of the Uno R4 WiFi. The harness remains useful for shared
+UI/state-machine testing, but none of the R4 timer, servo, watchdog, ADC or
+virtual-EEPROM backend is validated here.

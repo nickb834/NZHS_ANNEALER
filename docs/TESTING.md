@@ -25,12 +25,16 @@ Use this checklist before unattended use or publishing a firmware release.
   measurements before testing the 12.3 A trip.
 - Confirm the D8 DS18B20, A4/A5 OLED bus, R4 5V estimate, EEPROM profile and
   reference persistence, watchdog reset and reset-cause display.
+- Confirm Analyse serial records are visible at 115200 baud through the R4
+  WiFi board's normal USB/ESP32-S3 bridge.
+- Confirm a forced timer, servo, or watchdog initialisation failure blocks a run
+  with `R4 HW` / `INIT ERR` and identifies the failed backend over serial.
 - Only reconnect the high-current output after all safe-state, gate and feeder
   checks pass.
 
 ## Controls and menus
 
-- Check TIME → MODE → SETTINGS → PROFILES → INFO → DIAGNOSTICS → TIME
+- Check TIME → MODE → SETTINGS → PROFILES → ANALYSE → INFO → DIAGNOSTICS → TIME
   navigation on the stopped screen.
 - Confirm UP opens each selected menu and every `BACK >` returns to the
   originating stopped-screen item.
@@ -73,12 +77,58 @@ Use this checklist before unattended use or publishing a firmware release.
 - Establish one ignored cycle then five known-good cases. Verify a following
   cycle below 85% of the learned baseline stops before dropping.
 
+## Analyse and configuration
+
+- Without a current sensor, confirm Analyse shows `CUR SENSOR` / `REQUIRED` and
+  cannot energise the annealer.
+- With a current sensor, select Analyse, confirm `LOAD CASE` / `PRESS START`,
+  and verify START begins one attended eight-second capture.
+- Confirm current is sampled at the 25 ms target rate, the graph fills from left
+  to right, and live amps and joules use their final result positions.
+- Confirm serial output contains `ANALYSE,START`, timestamped SAMPLE records,
+  END with elapsed time/energy/peak current, and `ANALYSE,GATE_OPEN`.
+- Confirm the annealer switches off at eight seconds, the gate opens for five
+  seconds, the DUMPING message is brief, and the completed graph has `BACK >`.
+- Hold MODE for at least 300 ms during a capture: confirm immediate annealer off,
+  `reason=USER ABORT`, and the same five-second gate-open safety action.
+- After a capture, confirm the scrolling menu contains NEW, REVIEW, CONFIG and
+  BACK with no blank rows or unexpected START shortcut.
+- In CONFIG, test TIME adjustment including rapid 0.5-second increments and the
+  two-second reset; save and reload the resulting profile.
+- Configure ENERGY with each four-digit editor position, including a leading
+  zero such as `0300`, and verify it is stored as 300 J.
+- Configure PEAK DROP across its percentage range and verify the separate MAX
+  TIME safety limit is stored and enforced.
+- Select every profile destination, save, and confirm the Analyse working copy
+  is removed while the saved reference remains under profile PERFORMANCE.
+
+## Profile references and performance
+
+- Confirm every profile action list opens on LOAD, including an empty slot.
+- Confirm valid LOAD shows `LOADED` then returns to TIME; empty LOAD shows
+  `EMPTY`; SAVE and confirmed DELETE show their corresponding acknowledgement.
+- Select PERFORMANCE before saving a reference and confirm `NO DATA`.
+- Save an Analyse reference, power-cycle, reload the profile, and confirm its
+  reference graph, peak current and total joules persist.
+- Delete that profile and confirm its reference is invalidated.
+- Run a case that closely follows the saved curve and confirm the solid case
+  trace overlays the dotted reference with a high match percentage.
+- Repeat with safely simulated higher and lower current. Confirm match decreases
+  and the energy percentage moves above or below 100% in the expected direction.
+- Confirm comparison is observational: TIME, ENERGY or PEAK DROP still controls
+  when the annealer switches off.
+- Confirm the completed graph remains visible during the existing DROP period.
+- In auto-feed, confirm it remains visible during reload with a live
+  `NEXT 2.0s` to `NEXT 0.1s` countdown and no added feeder delay.
+- In free-run, confirm the normal manual LOAD countdown remains visible. In
+  single-shot, confirm the latest result remains available under PERFORMANCE.
+- From the second case, confirm a no-current/low-current safety fault takes
+  precedence over performance reporting and prevents the gate opening.
+
 ## Profiles, information, and stability
 
 - Create, rename, save, load, and delete profiles. Confirm time, mode,
   RESTART, and DUMP persist across a power cycle.
-- Save an Analyse reference to a profile, load it, run a comparison case, and
-  confirm the live/dropping/reloading comparison graph and PERFORMANCE review.
 - Confirm a DUMP-enabled profile loads into free-run with the feeder disabled
   and RESTART off.
 - In INFO, scroll through LOW, BASE, 5V, and firmware version; confirm `BASE`
@@ -86,3 +136,14 @@ Use this checklist before unattended use or publishing a firmware release.
 - Inspect diagnostics after any reset.
 - Run multiple continuous free-run and auto-feed cycles and watch for resets or
   unexpected output changes during annealing, dropping, and feeding.
+
+## SimulIDE scope
+
+- Use SimulIDE 1.1.0 SR2 only for the production Uno R3 HEX; do not treat it as
+  an Uno R4 timer, watchdog, servo or virtual-EEPROM test.
+- Confirm the normal tracked HEX is used with no simulator-specific firmware
+  flags or alternate sketch.
+- When testing saved references across simulator restarts or firmware reloads,
+  use the MCU's Save EEPROM Data and Load EEPROM Data actions.
+- Exercise all shared menu paths, profile acknowledgements, Analyse CONFIG,
+  reference review and comparison screens before capturing documentation images.

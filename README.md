@@ -6,9 +6,9 @@ Firmware for the NZHS Annealer Shield, supporting Arduino Uno-compatible
 ATmega328P boards and the Arduino Uno R4 WiFi from the same sketch. For the
 annealer build and hardware guide, see [MGNZ Makes](http://www.mgnz-makes.com/).
 
-This branch is firmware version **4.0.0**. Test changes with the machine
+This branch is firmware version **4.1.0**. Test changes with the machine
 attended before relying on automatic operation. Menu changes can be safely
-tested with the included [SimulIDE simulation](simulide/).
+tested with the included Uno R3 [SimulIDE simulation](simulide/).
 
 ## Controls
 
@@ -32,10 +32,6 @@ home screens are shown below.
 | ANALYSE | INFO | DIAGNOSTICS |
 | --- | --- | --- |
 | ![ANALYSE selected](docs/screenshots/home-analyse.png) | ![INFO selected](docs/screenshots/home-info.png) | ![DIAGNOSTICS selected](docs/screenshots/home-diagnostics.png) |
-
-`DIAGNOSTICS >` then shows its sensor and reset information:
-
-![Diagnostics menu](docs/screenshots/diagnostics-menu.png)
 
 ### Time adjustment
 
@@ -65,6 +61,8 @@ run.
 
 Open `SETTINGS >` with UP. MODE selects `RESTART`, `DUMP`, or `BACK >`; UP
 changes the selected item.
+
+![Settings menu](docs/screenshots/settings-menu.png)
 
 - **RESTART** resumes free-run or auto-feed after a cooldown. It is saved in
   EEPROM.
@@ -125,6 +123,10 @@ Opening a profile defaults to `LOAD >`; `SAVE`, `RENAME`, and confirmed
 saved reference curve before a comparison case exists, or overlays the latest
 comparison case and displays its curve-match and energy percentages.
 
+| Profile selector | LOAD action | PERFORMANCE action |
+| --- | --- | --- |
+| ![Profile 1 selector](docs/screenshots/profiles-selector.png) | ![Profile actions with LOAD selected](docs/screenshots/profile-actions-load.png) | ![Profile actions with PERFORMANCE selected](docs/screenshots/profile-actions-performance.png) |
+
 ## Analyse mode
 
 `ANALYSE >` records the annealer's current profile over a fixed eight-second
@@ -132,7 +134,9 @@ run. It is intended for attended testing with sacrificial cases while working
 out the current and energy profile for a new case type. An analysis run may
 overheat and ruin the case; it is not a normal annealing cycle.
 
-![Completed Analyse current graph](docs/screenshots/analyse-result.png)
+| Load prompt | Analyse menu | ENERGY configuration | Completed result |
+| --- | --- | --- | --- |
+| ![Analyse load-case prompt](docs/screenshots/analyse-load.png) | ![Analyse menu with NEW, REVIEW, CONFIG and BACK](docs/screenshots/analyse-menu.png) | ![Analysis ENERGY configuration](docs/screenshots/analysis-config-energy.png) | ![Completed Analyse current graph](docs/screenshots/analyse-result.png) |
 
 A current sensor is required. Select `ANALYSE >`, load a case when prompted,
 then press START. During the run the firmware:
@@ -164,6 +168,10 @@ adding delays. The footer shows values such as `M94% E103% NEXT 1.8s`; the
 latest case remains available under PERFORMANCE until another comparison or
 analysis replaces it. Match results are observational: the selected TIME,
 ENERGY, or PEAK DROP rule still determines when annealing stops.
+
+| Saved reference | Auto-feed reload | Countdown completion | PERFORMANCE review |
+| --- | --- | --- | --- |
+| ![Saved profile reference](docs/screenshots/profile-reference.png) | ![Performance comparison during auto-feed reload](docs/screenshots/performance-next.png) | ![Performance countdown reaching zero](docs/screenshots/performance-next-complete.png) | ![Retained profile performance result](docs/screenshots/performance-result.png) |
 
 Holding MODE for at least 300 ms during an analysis is the manual safety abort.
 It immediately turns the annealing output off and opens the drop gate for five
@@ -205,15 +213,30 @@ recorded before the reset. UP returns to the stopped screen.
 The record is best-effort because the Uno bootloader can clear the reset cause
 before the firmware reads it.
 
+| INFO thresholds | INFO voltage/version | Diagnostics |
+| --- | --- | --- |
+| ![INFO threshold page](docs/screenshots/info-menu.png) | ![INFO voltage and firmware page](docs/screenshots/info-version.png) | ![Diagnostics menu](docs/screenshots/diagnostics-menu.png) |
+
 ## Build and upload
 
 ### Arduino IDE
 
+| Dependency | Uno R3-compatible AVR | Uno R4 WiFi |
+| --- | --- | --- |
+| Board package | Arduino AVR Boards 1.8.8 | Arduino UNO R4 Boards 1.6.0 |
+| OneWire 2.3.8 | Required | Required |
+| DallasTemperature 4.0.6 | Required | Required |
+| Servo 1.3.0 | Not required | Required |
+| SPI, Wire, EEPROM | Included with board package | Included with board package |
+| FspTimer | Not used | Included with R4 board package |
+
+Adafruit GFX and SSD1306 are not required; the firmware contains its own
+fixed-size OLED renderer. WiFiS3 is also not currently required: this release
+does not yet use the R4 WiFi radio.
+
 1. Install the current [Arduino IDE](https://www.arduino.cc/en/software).
-2. In **Library Manager**, install:
-   - `OneWire` 2.3.8
-   - `DallasTemperature` 4.0.6
-   - `Servo` 1.3.0 when building for the Uno R4
+2. In **Library Manager**, install OneWire and DallasTemperature. Install Servo
+   only when building for the Uno R4.
 3. For an Uno R4, install **Arduino UNO R4 Boards** 1.6.0 in Boards Manager.
 4. Open [`NZHS_ANNEALER_128x32_OLED.ino`](NZHS_ANNEALER_128x32_OLED/NZHS_ANNEALER_128x32_OLED.ino).
 5. Select the board currently being used:
@@ -242,7 +265,7 @@ The tracked release artifacts are:
 - `NZHS_ANNEALER_128x32_OLED.ino.uno-r4-wifi.bin` — Uno R4 WiFi application
   image; its board bootloader remains separate
 
-When firmware source changes, rebuild both artifacts from the exact commit
+When firmware source changes, rebuild all tracked artifacts from the exact commit
 before distributing or pushing them.
 
 ## Uno R3 and R4 support
@@ -273,6 +296,14 @@ tested, but should work on Windows/Linux) and loads the normal production HEX;
 it is not a simulator-specific firmware build.
 See [simulide/README.md](simulide/README.md) for setup and limits.
 
+SimulIDE 1.1.0 supports the AVR-based Uno R3 model, not the Renesas RA4M1 in
+the Uno R4. SimulIDE 2's 32-bit/QEMU work is experimental and does not provide
+a usable RA4M1 or combined RA4M1/ESP32-S3 Uno R4 WiFi model. The harness can
+therefore validate the shared menus and R3 state-machine behaviour, but R4
+timers, servo pulses, watchdog, ADC and virtual EEPROM require physical-board
+testing. See the [SimulIDE MCU list](https://simulide.com/p/mcus/) and its
+[32-bit MCU status](https://simulide.com/p/forum/topic/how-to-add-apm32-mcu-to-simuiide/).
+
 ![SimulIDE Uno harness](simulide/nzhs-annealer-simulide.png)
 
 ## Testing and development notes
@@ -282,6 +313,15 @@ The detailed release/hardware validation checklist is in
 
 ## Version history
 
+SW version 4.1.0
+
+- Added profile-configured TIME, ENERGY, and PEAK DROP stop rules.
+- Added persistent Analyse reference curves and normal-case performance
+  comparison, including DROP and auto-feed NEXT displays without extra delays.
+- Replaced the Adafruit display stack with the compact fixed-size OLED renderer.
+- Added compile-time Uno R4 WiFi support while retaining the same Arduino IDE
+  sketch and Uno R3 behaviour.
+
 SW version 4.0.0
 
 - Added home screen menus for settings, profiles, diagnostics, and info.
@@ -289,10 +329,6 @@ SW version 4.0.0
 - Added a low-current safety stop.
 - Added Analyse mode with an OLED current trace, USB serial data, an input-energy
   estimate, retained result review, and a manual safety abort.
-- Added profile-configured TIME, ENERGY, and PEAK DROP stop rules plus saved
-  reference curves and normal-case performance comparison.
-- Added compile-time Arduino Uno R4 WiFi support while preserving the Uno R3
-  firmware binary.
 
 SW version 3.8.0
 - Fixed bug relating to case feeder home position drift
