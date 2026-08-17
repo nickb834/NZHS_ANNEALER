@@ -1492,7 +1492,7 @@ void setup()
   if(!g_R4DropServoReady) Serial.println(F("R4 INIT ERROR: DROP SERVO"));
   if(!g_R4WatchdogReady) Serial.println(F("R4 INIT ERROR: WATCHDOG"));
   #if NZHS_HAS_LED_MATRIX
-  Serial.println(F("R4 bench: M=matrix, W=direct, S=setup, I=status, X=clear WiFi."));
+  Serial.println(F("R4 bench: M=matrix, W=direct, S=setup, I=status, O=WiFi off, X=clear."));
   #endif
   #endif
   digitalWrite(g_FeederStepperEnPin,HIGH); //disable stepper driver
@@ -1992,14 +1992,25 @@ static void r4HandleBenchSerial(void)
   while(Serial.available())
   {
     char const command = Serial.read();
+    if(command == 'O' || command == 'o')
+    {
+      #if NZHS_HAS_WIFI
+      if(g_SystemState == STATE_STOPPED)
+      {
+        r4StopWifi();
+        Serial.println(F("WIFI RUNTIME STOPPED; SAVED CONFIG RETAINED"));
+      }
+      else
+      {
+        Serial.println(F("WIFI STOP REFUSED: STOP THE ANNEALER FIRST"));
+      }
+      #endif
+      continue;
+    }
     if(command == 'X' || command == 'x')
     {
       #if NZHS_HAS_WIFI
-      if(g_R4MatrixDebugActive)
-      {
-        Serial.println(F("WIFI CLEAR REFUSED: RESET TO EXIT MATRIX DEBUG"));
-      }
-      else if(g_SystemState == STATE_STOPPED)
+      if(g_SystemState == STATE_STOPPED)
       {
         r4ClearWifiConfig();
       }
@@ -2020,11 +2031,7 @@ static void r4HandleBenchSerial(void)
     if(command == 'S' || command == 's')
     {
       #if NZHS_HAS_WIFI
-      if(g_R4MatrixDebugActive)
-      {
-        Serial.println(F("WIFI SETUP REFUSED: RESET TO EXIT MATRIX DEBUG"));
-      }
-      else if(g_SystemState == STATE_STOPPED)
+      if(g_SystemState == STATE_STOPPED)
       {
         r4StartWifiSetupAp(false);
       }
@@ -2041,10 +2048,6 @@ static void r4HandleBenchSerial(void)
       if(g_R4WifiMode != R4_WIFI_OFF && g_R4WifiMode != R4_WIFI_ERROR)
       {
         Serial.println(F("WIFI MONITOR ALREADY ACTIVE"));
-      }
-      else if(g_R4MatrixDebugActive)
-      {
-        Serial.println(F("WIFI MONITOR REFUSED: RESET TO EXIT MATRIX DEBUG"));
       }
       else if(g_SystemState == STATE_STOPPED)
       {
@@ -2067,13 +2070,6 @@ static void r4HandleBenchSerial(void)
       {
         continue;
       }
-      #if NZHS_HAS_WIFI
-      if(g_R4WifiMode != R4_WIFI_OFF && g_R4WifiMode != R4_WIFI_ERROR)
-      {
-        Serial.println(F("MATRIX DEBUG REFUSED: WIFI MONITOR ACTIVE"));
-        continue;
-      }
-      #endif
       if(g_SystemState == STATE_STOPPED)
       {
         r4BeginMatrixDebug();
@@ -2753,11 +2749,6 @@ static void r4StopWifi(void)
 *//*-------------------------------------------------------------------------*/
 static void r4StartConfiguredWifi(void)
 {
-  if(g_R4MatrixDebugActive)
-  {
-    Serial.println(F("WIFI REFUSED: RESET TO EXIT MATRIX DEBUG"));
-    return;
-  }
   if(!g_R4WifiConfig.monitorEnabled)
   {
     r4StopWifi();
@@ -2794,11 +2785,6 @@ static void r4StartConfiguredWifi(void)
 *//*-------------------------------------------------------------------------*/
 static void r4StartWifiSetupAp(bool const fallback)
 {
-  if(g_R4MatrixDebugActive)
-  {
-    Serial.println(F("WIFI SETUP REFUSED: RESET TO EXIT MATRIX DEBUG"));
-    return;
-  }
   r4StopWifi();
   if(WiFi.status() == WL_NO_MODULE)
   {
