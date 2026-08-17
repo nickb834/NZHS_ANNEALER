@@ -15,6 +15,9 @@ Use this checklist before unattended use or publishing a firmware release.
 
 ## Uno R4 platform bring-up
 
+The matrix page legend and bench procedure are documented in
+[R4_MATRIX_DEBUG.md](R4_MATRIX_DEBUG.md).
+
 - With the annealing/high-current output disconnected, confirm D6 remains LOW
   throughout boot and stopped operation.
 - Measure the D9 servo waveform and confirm approximately 640 us open and
@@ -29,6 +32,27 @@ Use this checklist before unattended use or publishing a firmware release.
   WiFi board's normal USB/ESP32-S3 bridge.
 - Confirm a forced timer, servo, or watchdog initialisation failure blocks a run
   with `R4 HW` / `INIT ERR` and identifies the failed backend over serial.
+- Confirm the onboard LED matrix remains dark and uninitialised during normal
+  operation with the shield fitted.
+- With the shield/high-current output disconnected and firmware stopped, send
+  `M` at 115200 baud. Confirm matrix debug starts, D6 remains LOW, the gate is
+  closed, the feeder is disabled, and START is blocked until reset.
+- Confirm RDY/ERR, reset-cause, OUT, SNS, TMP/value, and HBT pages rotate every
+  four seconds; confirm M or N advances one page immediately.
+- Confirm each page change prints its three-letter identifier and full values
+  over Serial. Force or simulate a platform failure and confirm `ERR` flashes.
+- Confirm RDY bottom indicators match feeder timer, Servo, watchdog and EEPROM.
+- Check OUT bottom indicators and Serial values against D6, D7, D10, D5, D13,
+  and step activity.
+- Connect the bench DS18B20 (`G` to GND, `R` to 5V, `Y` to D8) before reset and
+  confirm the SNS bottom indicators and Serial output report a detected device
+  and valid temperature.
+- Confirm the TMP page alternates after two seconds to the rounded temperature
+  (for example `50C`) and Serial reports the one-decimal reading. Disconnect or
+  invalidate the sensor and confirm the value becomes `ERR`.
+- Confirm HBT remains readable while its bottom-row dot moves continuously.
+- Reset and confirm the matrix turns off, normal START behaviour returns, and
+  no matrix timer remains allocated.
 - Only reconnect the high-current output after all safe-state, gate and feeder
   checks pass.
 

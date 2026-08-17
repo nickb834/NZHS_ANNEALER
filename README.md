@@ -229,6 +229,7 @@ before the firmware reads it.
 | Servo 1.3.0 | Not required | Required |
 | SPI, Wire, EEPROM | Included with board package | Included with board package |
 | FspTimer | Not used | Included with R4 board package |
+| Arduino_LED_Matrix | Not available | Included; optional bench debug only |
 
 Adafruit GFX and SSD1306 are not required; the firmware contains its own
 fixed-size OLED renderer. WiFiS3 is also not currently required: this release
@@ -289,6 +290,17 @@ reset recovery, EEPROM persistence, and every fault/cooldown path. The current
 SimulIDE harness models the Uno R3 and does not validate the Renesas timer or
 watchdog backend.
 
+### Uno R4 WiFi matrix bench diagnostics
+
+The R4 WiFi's 12x8 LED matrix is obscured by the installed annealer shield, so
+the production firmware leaves it completely uninitialised during normal use.
+For bare-board development, send `M` at 115200 baud while stopped to enter a
+non-persistent, run-blocking diagnostic mode. It shows platform, reset, output,
+sensor, temperature and heartbeat pages while printing full values over Serial.
+Resetting exits diagnostics. See
+[Uno R4 WiFi matrix bench diagnostics](docs/R4_MATRIX_DEBUG.md) for the page
+legend, DS18B20 wiring, safety behaviour and troubleshooting.
+
 ## Simulator
 
 The [`simulide/`](simulide/) harness uses SimulIDE 1.1.0 SR2 on macOS (as
@@ -321,6 +333,7 @@ SW version 4.1.0
 - Replaced the Adafruit display stack with the compact fixed-size OLED renderer.
 - Added compile-time Uno R4 WiFi support while retaining the same Arduino IDE
   sketch and Uno R3 behaviour.
+- Added opt-in, run-blocking Uno R4 WiFi LED-matrix bench diagnostics.
 
 SW version 4.0.0
 
