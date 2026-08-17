@@ -4,10 +4,29 @@ Use this checklist before unattended use or publishing a firmware release.
 
 ## Build and artifacts
 
-- Compile for an Arduino Uno with Adafruit SSD1306, Adafruit GFX, OneWire, and
-  DallasTemperature installed.
-- Record the compiler flash and RAM report.
-- Regenerate and test both tracked HEX artifacts from the exact source commit.
+- Compile the same sketch for both `arduino:avr:uno` and
+  `arduino:renesas_uno:unor4wifi` with OneWire and DallasTemperature installed,
+  plus Servo for the R4.
+- Record the compiler flash and RAM report for both targets.
+- Regenerate and test both tracked R3 HEX artifacts and the tracked R4 WiFi BIN
+  artifact from the exact source commit.
+- Repeat the behavioural sections below on each physical board; a successful
+  cross-compile is not hardware validation.
+
+## Uno R4 platform bring-up
+
+- With the annealing/high-current output disconnected, confirm D6 remains LOW
+  throughout boot and stopped operation.
+- Measure the D9 servo waveform and confirm approximately 640 us open and
+  1920 us closed pulses in a 20 ms servo frame.
+- Measure D12 feeder pulses in each speed region; confirm D13 direction and the
+  active-low D5 enable state match the R3 installation.
+- Confirm A0 defaults to ten-bit readings and recalibrate current against known
+  measurements before testing the 12.3 A trip.
+- Confirm the D8 DS18B20, A4/A5 OLED bus, R4 5V estimate, EEPROM profile and
+  reference persistence, watchdog reset and reset-cause display.
+- Only reconnect the high-current output after all safe-state, gate and feeder
+  checks pass.
 
 ## Controls and menus
 
@@ -58,6 +77,8 @@ Use this checklist before unattended use or publishing a firmware release.
 
 - Create, rename, save, load, and delete profiles. Confirm time, mode,
   RESTART, and DUMP persist across a power cycle.
+- Save an Analyse reference to a profile, load it, run a comparison case, and
+  confirm the live/dropping/reloading comparison graph and PERFORMANCE review.
 - Confirm a DUMP-enabled profile loads into free-run with the feeder disabled
   and RESTART off.
 - In INFO, scroll through LOW, BASE, 5V, and firmware version; confirm `BASE`

@@ -2,8 +2,9 @@
 
 This is a fork of [MJGNZ/NZHS_ANNEALER](https://github.com/MJGNZ/NZHS_ANNEALER).
 
-Arduino Uno firmware for the NZHS Annealer Shield. For the annealer build and
-hardware guide, see [MGNZ Makes](http://www.mgnz-makes.com/).
+Firmware for the NZHS Annealer Shield, supporting Arduino Uno-compatible
+ATmega328P boards and the Arduino Uno R4 WiFi from the same sketch. For the
+annealer build and hardware guide, see [MGNZ Makes](http://www.mgnz-makes.com/).
 
 This branch is firmware version **4.0.0**. Test changes with the machine
 attended before relying on automatic operation. Menu changes can be safely
@@ -110,12 +111,19 @@ detect every mechanical jam.
 - Operating mode
 - RESTART setting
 - DUMP setting
+- TIME, ENERGY, or PEAK DROP stop rule
+- An optional 64-sample Analyse reference curve
 
 MODE selects a profile or action; UP opens or confirms it. Empty slots are
 shown as `PROFILE 1` through `PROFILE 8`. A profile name has ten characters;
 hold UP for one second while editing the profile name to cycle characters
 automatically. Loading a profile applies its settings immediately. The learned
 current baseline is per-run and is not saved in a profile.
+
+Opening a profile defaults to `LOAD >`; `SAVE`, `RENAME`, and confirmed
+`DELETE` operations display a brief acknowledgement. `PERFORMANCE >` shows the
+saved reference curve before a comparison case exists, or overlays the latest
+comparison case and displays its curve-match and energy percentages.
 
 ## Analyse mode
 
@@ -124,9 +132,7 @@ run. It is intended for attended testing with sacrificial cases while working
 out the current and energy profile for a new case type. An analysis run may
 overheat and ruin the case; it is not a normal annealing cycle.
 
-| Analyse menu | Completed result |
-| --- | --- |
-| ![Analyse menu with NEW, REVIEW, and BACK selections](docs/screenshots/analyse-menu.png) | ![Completed Analyse current graph](docs/screenshots/analyse-result.png) |
+![Completed Analyse current graph](docs/screenshots/analyse-result.png)
 
 A current sensor is required. Select `ANALYSE >`, load a case when prompted,
 then press START. During the run the firmware:
@@ -138,13 +144,26 @@ then press START. During the run the firmware:
 - Sends each sample to the USB serial port at 115200 baud for external logging
   and graphing.
 - Retains the latest graph, peak current, and total input-energy estimate in RAM
-  so it can be reviewed until another analysis starts or the Uno is reset.
+  so it can be reviewed or configured before it is saved.
 - Turns the annealing output off after eight seconds, opens the drop gate for
   five seconds, then shows the completed graph with `BACK >`.
 
 After one result has been retained, opening Analyse shows `NEW >`, `REVIEW >`,
-and `BACK >`. MODE moves between these items and UP selects one. The retained
-result is session-only and is not written to EEPROM or a cartridge profile.
+`CONFIG >`, and `BACK >`. CONFIG selects a TIME, ENERGY, or PEAK DROP stop
+rule, its target or maximum time, and the destination profile. Saving writes a
+64-sample reference plus peak current, total energy, duration, and checksum to
+that profile. The Analyse working copy is then cleared so the saved curve is
+reviewed through the profile's `PERFORMANCE >` action instead of appearing in
+two menus.
+
+Loading a profile with a saved reference compares subsequent normal cases with
+that curve. During annealing the dotted reference and solid current-case trace
+are shown together. The completed comparison remains visible during the normal
+drop and, in auto-feed mode, during the existing reload countdown without
+adding delays. The footer shows values such as `M94% E103% NEXT 1.8s`; the
+latest case remains available under PERFORMANCE until another comparison or
+analysis replaces it. Match results are observational: the selected TIME,
+ENERGY, or PEAK DROP rule still determines when annealing stops.
 
 Holding MODE for at least 300 ms during an analysis is the manual safety abort.
 It immediately turns the annealing output off and opens the drop gate for five
@@ -192,14 +211,17 @@ before the firmware reads it.
 
 1. Install the current [Arduino IDE](https://www.arduino.cc/en/software).
 2. In **Library Manager**, install:
-   - `Adafruit SSD1306`
-   - `Adafruit GFX Library`
-   - `OneWire`
-   - `DallasTemperature`
-3. Open [`NZHS_ANNEALER_128x32_OLED.ino`](NZHS_ANNEALER_128x32_OLED/NZHS_ANNEALER_128x32_OLED.ino).
-4. Select **Tools → Board → Arduino AVR Boards → Arduino Uno**.
-5. Select the Uno's serial port under **Tools → Port**, then use **Verify** or
-   **Upload**.
+   - `OneWire` 2.3.8
+   - `DallasTemperature` 4.0.6
+   - `Servo` 1.3.0 when building for the Uno R4
+3. For an Uno R4, install **Arduino UNO R4 Boards** 1.6.0 in Boards Manager.
+4. Open [`NZHS_ANNEALER_128x32_OLED.ino`](NZHS_ANNEALER_128x32_OLED/NZHS_ANNEALER_128x32_OLED.ino).
+5. Select the board currently being used:
+   - **Arduino AVR Boards → Arduino Uno** for Uno R3-compatible AVR boards; or
+   - **Arduino UNO R4 Boards → Arduino UNO R4 WiFi** for the R4 WiFi.
+6. Select its serial port under **Tools → Port**, then use **Verify** or
+   **Upload**. The sketch selects the correct hardware backend automatically;
+   no separate sketch or build script is required.
 
 Only flash the firmware while the unit is idle, not annealing or in cooldown.
 
@@ -209,6 +231,7 @@ From the repository root:
 
 ```sh
 arduino-cli compile --fqbn arduino:avr:uno --export-binaries NZHS_ANNEALER_128x32_OLED
+arduino-cli compile --fqbn arduino:renesas_uno:unor4wifi --export-binaries NZHS_ANNEALER_128x32_OLED
 ```
 
 The tracked release artifacts are:
@@ -216,38 +239,32 @@ The tracked release artifacts are:
 - `NZHS_ANNEALER_128x32_OLED.ino.standard.hex` — standard Uno image
 - `NZHS_ANNEALER_128x32_OLED.ino.with_bootloader.standard.hex` — image that
   includes the bootloader
+- `NZHS_ANNEALER_128x32_OLED.ino.uno-r4-wifi.bin` — Uno R4 WiFi application
+  image; its board bootloader remains separate
 
 When firmware source changes, rebuild both artifacts from the exact commit
 before distributing or pushing them.
 
-## Future Uno R4 hardware support
+## Uno R3 and R4 support
 
-Future hardware work to move beyond the ATmega328P's 32 KB flash limit will
-focus on the [Uno R4 Minima](https://docs.arduino.cc/hardware/uno-r4-minima) and
-[Uno R4 WiFi](https://docs.arduino.cc/hardware/uno-r4-wifi). Both retain the
-Arduino Uno shield layout and 5 V I/O while providing 256 KB flash and 32 KB RAM. The
-Minima is the simpler initial target; the WiFi board uses the same Renesas
-RA4M1 main processor and can follow the same port if its wireless features are
-useful.
+[`AnnealerPlatform.h`](NZHS_ANNEALER_128x32_OLED/AnnealerPlatform.h) selects an
+ATmega328P or Renesas RA4M1 backend at compile time. The R3 retains its original
+Timer1 servo output, Timer2 feeder interrupt, AVR watchdog, reset diagnostics,
+ADC rail measurement, and byte-oriented EEPROM writes. The R4 backend uses the
+Servo library, a Renesas `FspTimer` callback, the RA4M1 watchdog and reset
+registers, the R4 ADC API, and batched virtual-EEPROM writes.
 
-The R4 is a 32-bit Arm board, not an AVR board, so the current firmware cannot
-be compiled for it unchanged. R4 support will require:
+Both targets use the same pins, menus, profile format, safety rules, and first
+1024 EEPROM addresses. R4-only code is excluded from the R3 build, and the R3
+firmware remains constrained by its 32 KB flash limit.
 
-- Replacing the AVR Timer1 configuration used for drop-gate servo control.
-- Replacing the Timer2 compare interrupt used to generate feeder step pulses.
-- Porting AVR watchdog and reset-cause diagnostics.
-- Replacing the ATmega328P ADC/band-gap implementation used to estimate the Uno
-  5V rail.
-- Verifying EEPROM behaviour and the SSD1306, OneWire, DallasTemperature, and
-  servo support against the Arduino R4 core.
-- Revalidating pin behaviour, feeder and gate timing, current measurements,
-  cooldown handling, over-current protection, and every other hardware safety
-  path on an installed annealer shield.
-- Producing R4-specific firmware artifacts and deciding how R4 builds will be
-  tested, because the present SimulIDE harness models an Arduino Uno.
-
-Until that port and hardware validation are complete, release firmware and HEX
-artifacts remain for Arduino Uno-compatible AVR boards only.
+The R4 build compiles successfully, but installation on the annealer remains
+hardware-validation work. Before energising the coil, verify the safe boot pin
+states, D9 gate-servo pulse widths, D12 feeder step rate, D13 direction and D5
+enable behaviour, A0 current calibration, DS18B20 operation on D8, watchdog
+reset recovery, EEPROM persistence, and every fault/cooldown path. The current
+SimulIDE harness models the Uno R3 and does not validate the Renesas timer or
+watchdog backend.
 
 ## Simulator
 
@@ -272,6 +289,10 @@ SW version 4.0.0
 - Added a low-current safety stop.
 - Added Analyse mode with an OLED current trace, USB serial data, an input-energy
   estimate, retained result review, and a manual safety abort.
+- Added profile-configured TIME, ENERGY, and PEAK DROP stop rules plus saved
+  reference curves and normal-case performance comparison.
+- Added compile-time Arduino Uno R4 WiFi support while preserving the Uno R3
+  firmware binary.
 
 SW version 3.8.0
 - Fixed bug relating to case feeder home position drift
