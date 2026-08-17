@@ -22,7 +22,11 @@
 //                          | | |
 //                          | | |
 //                          | | |
+#if NZHS_HAS_WIFI
+#define SOFTWARE_VERSION F("4.2.0")
+#else
 #define SOFTWARE_VERSION F("4.1.0")
+#endif
 #define SCREEN_WIDTH 128 // OLED display width, in pixels
 #define SCREEN_HEIGHT 32 // OLED display height, in pixels
 #define PSU_OVERCURRENT 12300 //12.3A
@@ -66,7 +70,11 @@
 #define CURRENT_SENSOR_DETECTION_MA 100 //minimum anneal-cycle average that verifies the fitted current sensor
 #define RESET_DIAGNOSTIC_MAGIC 0x5A
 #define INTERNAL_BANDGAP_MV 1100 //nominal ATmega328P band-gap voltage; calibrate if absolute accuracy is required
+#if NZHS_HAS_WIFI
+#define INFO_SCREEN_SCROLL_COUNT 5
+#else
 #define INFO_SCREEN_SCROLL_COUNT 3
+#endif
 #define SUPPLY_VOLTAGE_SAMPLE_PERIOD 1000 //refresh the Info-screen AVcc reading once per second
 #define LOOP_TIME 120  //ms per main loop iteration
 #define COOLDOWN_PERIOD 300000 //Cooling period in milliseconds
@@ -112,6 +120,15 @@
 #define PROFILE_REFERENCE_CHECKSUM_OFFSET 71
 #define PROFILE_REFERENCE_RECORD_SIZE 72
 #define ARDUINO_UNO_EEPROM_SIZE 1024
+#if NZHS_HAS_WIFI
+#define EEPROM_ADDRESS_WIFI_CONFIG 768
+#define WIFI_CONFIG_MAGIC 0x57
+#define WIFI_CONFIG_VERSION 1
+#define WIFI_SSID_MAX_LENGTH 32
+#define WIFI_PASSWORD_MAX_LENGTH 63
+#define WIFI_CONNECT_TIMEOUT_MS 15000UL
+#define WIFI_HTTP_REQUEST_MAX_LENGTH 1536
+#endif
 #define PROFILE_NOTICE_PERIOD 1000
 #define RIGHT_PANEL_X 56
 #define ANALYSIS_ENERGY_X 92
@@ -501,6 +518,10 @@ typedef enum tStateMachineStates : uint8_t
   STATE_ANALYSIS_CONFIG,
   STATE_TARGET_TIMEOUT_WARNING,
   STATE_CURRENT_SENSOR_REQUIRED,
+  #if NZHS_HAS_WIFI
+  STATE_WIFI_SETTINGS,
+  STATE_WIFI_RESET_CONFIRM,
+  #endif
   #if NZHS_PLATFORM_UNO_R4
   STATE_PLATFORM_WARNING,
   #endif
@@ -530,9 +551,40 @@ typedef enum tSettingsScreenSelection : uint8_t
 {
   SETTINGS_SCREEN_AUTO_RESTART = 0,
   SETTINGS_SCREEN_DUMP_BUTTON,
+  #if NZHS_HAS_WIFI
+  SETTINGS_SCREEN_WIFI,
+  #endif
   SETTINGS_SCREEN_BACK,
   SETTINGS_SCREEN_SELECTION_COUNT,
 } tSettingsScreenSelection;
+
+#if NZHS_HAS_WIFI
+typedef enum tWifiSettingsSelection : uint8_t
+{
+  WIFI_SETTINGS_MONITOR = 0,
+  WIFI_SETTINGS_SETUP,
+  WIFI_SETTINGS_RESET,
+  WIFI_SETTINGS_BACK,
+  WIFI_SETTINGS_SELECTION_COUNT,
+} tWifiSettingsSelection;
+
+typedef enum tWifiResetSelection : uint8_t
+{
+  WIFI_RESET_CONFIRM = 0,
+  WIFI_RESET_BACK,
+  WIFI_RESET_SELECTION_COUNT,
+} tWifiResetSelection;
+
+typedef enum tR4WifiMode : uint8_t
+{
+  R4_WIFI_OFF = 0,
+  R4_WIFI_STATION_CONNECTING,
+  R4_WIFI_STATION_MONITOR,
+  R4_WIFI_DIRECT_MONITOR,
+  R4_WIFI_SETUP_AP,
+  R4_WIFI_ERROR,
+} tR4WifiMode;
+#endif
 
 typedef enum tAnalysisMenuSelection : uint8_t
 {
@@ -620,6 +672,18 @@ typedef struct __attribute__((packed)) tCartridgeProfile
   uint8_t checksum;
 } tCartridgeProfile;
 
+#if NZHS_HAS_WIFI
+typedef struct __attribute__((packed)) tR4WifiConfig
+{
+  uint8_t magic;
+  uint8_t version;
+  uint8_t monitorEnabled;
+  char ssid[WIFI_SSID_MAX_LENGTH + 1];
+  char password[WIFI_PASSWORD_MAX_LENGTH + 1];
+  uint8_t checksum;
+} tR4WifiConfig;
+#endif
+
 static_assert(EEPROM_ADDRESS_PROFILE_BASE + (PROFILE_COUNT * sizeof(tCartridgeProfile)) <=
               EEPROM_ADDRESS_PROFILE_RULE_BASE,
               "Profile stop rules overlap cartridge profiles");
@@ -629,6 +693,14 @@ static_assert(EEPROM_ADDRESS_PROFILE_RULE_BASE + (PROFILE_COUNT * 3) <=
 static_assert(EEPROM_ADDRESS_PROFILE_REFERENCE_BASE +
               (PROFILE_COUNT * PROFILE_REFERENCE_RECORD_SIZE) <= ARDUINO_UNO_EEPROM_SIZE,
               "Profile references exceed Arduino Uno EEPROM");
+#if NZHS_HAS_WIFI
+static_assert(EEPROM_ADDRESS_WIFI_CONFIG >=
+              EEPROM_ADDRESS_PROFILE_REFERENCE_BASE +
+              (PROFILE_COUNT * PROFILE_REFERENCE_RECORD_SIZE),
+              "WiFi configuration overlaps profile references");
+static_assert(EEPROM_ADDRESS_WIFI_CONFIG + sizeof(tR4WifiConfig) <= ARDUINO_UNO_EEPROM_SIZE,
+              "WiFi configuration exceeds EEPROM capacity");
+#endif
 
 typedef struct tRunSafetyState
 {
@@ -968,10 +1040,20 @@ static uint32_t g_R4MatrixHeartbeatTime = 0;
 #if NZHS_HAS_WIFI
 static WiFiServer g_R4WifiServer(80);
 static WiFiClient g_R4WifiClient;
+static tR4WifiConfig g_R4WifiConfig;
+static tR4WifiMode g_R4WifiMode = R4_WIFI_OFF;
+static tWifiSettingsSelection g_R4WifiSettingsSelection = WIFI_SETTINGS_MONITOR;
+static tWifiResetSelection g_R4WifiResetSelection = WIFI_RESET_BACK;
 static bool g_R4WifiMonitorActive = false;
-static char g_R4WifiRequestLine[96];
-static uint8_t g_R4WifiRequestLength = 0;
+static bool g_R4WifiConfigValid = false;
+static char g_R4WifiRequest[WIFI_HTTP_REQUEST_MAX_LENGTH];
+static uint16_t g_R4WifiRequestLength = 0;
+static uint16_t g_R4WifiHeaderLength = 0;
+static uint16_t g_R4WifiContentLength = 0;
 static uint32_t g_R4WifiClientDeadline = 0;
+static uint32_t g_R4WifiConnectDeadline = 0;
+static uint32_t g_R4WifiRestartTime = 0;
+static uint32_t g_R4WifiStatusCheckTime = 0;
 #endif
 
 #if NZHS_PLATFORM_UNO_R3
@@ -1117,6 +1199,10 @@ static void drawCaseCount(uint8_t const y, uint16_t const casesAnnealed);
 static void drawTimePanel(bool const selected);
 static void drawStoppedScreen(bool const fanIsOn, int16_t const temperature, uint16_t const casesAnnealed);
 static void drawSettingsScreen(void);
+#if NZHS_HAS_WIFI
+static void drawWifiSettingsScreen(void);
+static void drawWifiResetScreen(void);
+#endif
 static void drawProfilesScreen(void);
 static void drawProfileActionsScreen(void);
 static void drawProfilePerformanceScreen(void);
@@ -1150,16 +1236,32 @@ static void r4PrintMatrixDebugStatus(void);
 #endif
 #if NZHS_HAS_WIFI
 static void r4BeginWifiMonitor(void);
+static void r4LoadWifiConfig(void);
+static void r4SaveWifiConfig(void);
+static void r4ClearWifiConfig(void);
+static void r4SetWifiMonitorEnabled(bool const enabled);
+static void r4StartConfiguredWifi(void);
+static void r4StartWifiSetupAp(bool const fallback);
+static void r4StopWifi(void);
+static void r4UpdateWifiConnection(void);
+static bool r4WifiHasIpAddress(void);
+static void r4PrintWifiStatus(void);
 static void r4UpdateWifiMonitor(int16_t const temperature,
                                 uint16_t const current_ma,
                                 uint16_t const casesAnnealed,
                                 bool const fanIsOn);
 static void r4SendWifiMonitorPage(WiFiClient &client);
+static void r4SendWifiSetupPage(WiFiClient &client, char const * const message = NULL);
 static void r4SendWifiStatus(WiFiClient &client, int16_t const temperature,
                              uint16_t const current_ma,
                              uint16_t const casesAnnealed,
                              bool const fanIsOn);
 static void r4SendWifiCurve(WiFiClient &client);
+static void r4HandleWifiRequest(WiFiClient &client,
+                                int16_t const temperature,
+                                uint16_t const current_ma,
+                                uint16_t const casesAnnealed,
+                                bool const fanIsOn);
 #endif
 
 /*---------------------------------------------------------------------------*/
@@ -1303,6 +1405,9 @@ void setup()
     CurrentSensorPresent = true;
   }
   loadUserSettings();
+  #if NZHS_HAS_WIFI
+  r4LoadWifiConfig();
+  #endif
 
   #ifdef DEBUG
   Serial.print(F("Software Version : "));
@@ -1336,10 +1441,16 @@ void setup()
   if(!g_R4DropServoReady) Serial.println(F("R4 INIT ERROR: DROP SERVO"));
   if(!g_R4WatchdogReady) Serial.println(F("R4 INIT ERROR: WATCHDOG"));
   #if NZHS_HAS_LED_MATRIX
-  Serial.println(F("R4 bench: send M for matrix diagnostics or W for WiFi monitor while stopped."));
+  Serial.println(F("R4 bench: M=matrix, W=direct, S=setup, I=status, X=clear WiFi."));
   #endif
   #endif
   digitalWrite(g_FeederStepperEnPin,HIGH); //disable stepper driver
+  #if NZHS_HAS_WIFI
+  if(g_R4WifiConfig.monitorEnabled)
+  {
+    r4StartConfiguredWifi();
+  }
+  #endif
 }
 /*---------------------------------------------------------------------------*/
 /*! @brief      Timer2 ISR
@@ -1830,10 +1941,53 @@ static void r4HandleBenchSerial(void)
   while(Serial.available())
   {
     char const command = Serial.read();
+    if(command == 'X' || command == 'x')
+    {
+      #if NZHS_HAS_WIFI
+      if(g_R4MatrixDebugActive)
+      {
+        Serial.println(F("WIFI CLEAR REFUSED: RESET TO EXIT MATRIX DEBUG"));
+      }
+      else if(g_SystemState == STATE_STOPPED)
+      {
+        r4ClearWifiConfig();
+      }
+      else
+      {
+        Serial.println(F("WIFI CLEAR REFUSED: STOP THE ANNEALER FIRST"));
+      }
+      #endif
+      continue;
+    }
+    if(command == 'I' || command == 'i')
+    {
+      #if NZHS_HAS_WIFI
+      r4PrintWifiStatus();
+      #endif
+      continue;
+    }
+    if(command == 'S' || command == 's')
+    {
+      #if NZHS_HAS_WIFI
+      if(g_R4MatrixDebugActive)
+      {
+        Serial.println(F("WIFI SETUP REFUSED: RESET TO EXIT MATRIX DEBUG"));
+      }
+      else if(g_SystemState == STATE_STOPPED)
+      {
+        r4StartWifiSetupAp(false);
+      }
+      else
+      {
+        Serial.println(F("WIFI SETUP REFUSED: STOP THE ANNEALER FIRST"));
+      }
+      #endif
+      continue;
+    }
     if(command == 'W' || command == 'w')
     {
       #if NZHS_HAS_WIFI
-      if(g_R4WifiMonitorActive)
+      if(g_R4WifiMode != R4_WIFI_OFF && g_R4WifiMode != R4_WIFI_ERROR)
       {
         Serial.println(F("WIFI MONITOR ALREADY ACTIVE"));
       }
@@ -1863,7 +2017,7 @@ static void r4HandleBenchSerial(void)
         continue;
       }
       #if NZHS_HAS_WIFI
-      if(g_R4WifiMonitorActive)
+      if(g_R4WifiMode != R4_WIFI_OFF && g_R4WifiMode != R4_WIFI_ERROR)
       {
         Serial.println(F("MATRIX DEBUG REFUSED: WIFI MONITOR ACTIVE"));
         continue;
@@ -1950,6 +2104,12 @@ async function graph(){try{curve=await fetch('/api/curve',{cache:'no-store'}).th
 status();graph();setInterval(status,500);setInterval(graph,1000);
 </script></body></html>)HTML";
 
+static const char R4_WIFI_SETUP_HTML_START[] = R"HTML(<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>NZHS Annealer WiFi Setup</title><style>:root{color-scheme:dark;font-family:system-ui,sans-serif}body{margin:0;background:#080b10;color:#edf6ff}main{max-width:420px;margin:auto;padding:24px}label{display:block;margin-top:16px;color:#9fb3c8}input{box-sizing:border-box;width:100%;padding:12px;margin-top:5px;background:#111a24;color:#fff;border:1px solid #38526c;border-radius:6px}button{width:100%;padding:12px;margin-top:22px;background:#1976b9;color:#fff;border:0;border-radius:6px;font-size:1rem}.note{color:#9fb3c8;font-size:.85rem}.msg{color:#8ce99a}</style></head><body><main><h1>NZHS Annealer</h1><h2>WiFi setup</h2>)HTML";
+
+static const char R4_WIFI_SETUP_HTML_FORM[] = R"HTML(<form method="post" action="/setup/save"><label for="ssid">Network name</label><input id="ssid" name="ssid" maxlength="32" required><label for="password">Password</label><input id="password" name="password" type="password" maxlength="63"><button type="submit">Save and connect</button></form><p class="note">Credentials are stored unencrypted in the R4 EEPROM-backed storage. The monitor remains read-only.</p></main></body></html>)HTML";
+
 /*---------------------------------------------------------------------------*/
 /*! @brief      Return a compact human-readable name for web telemetry.
 *//*-------------------------------------------------------------------------*/
@@ -1985,6 +2145,8 @@ static char const * r4WifiStateName(tStateMachineStates const state)
     case STATE_ANALYSIS_CONFIG: return "ANALYSE CONFIG";
     case STATE_TARGET_TIMEOUT_WARNING: return "TARGET TIMEOUT";
     case STATE_CURRENT_SENSOR_REQUIRED: return "CURRENT REQUIRED";
+    case STATE_WIFI_SETTINGS: return "WIFI SETTINGS";
+    case STATE_WIFI_RESET_CONFIRM: return "WIFI RESET";
     case STATE_PLATFORM_WARNING: return "R4 HW ERROR";
     default: return "UNKNOWN";
   }
@@ -1998,7 +2160,9 @@ static void r4SendWifiHeaders(WiFiClient &client, char const * const contentType
 {
   client.print(F("HTTP/1.1 "));
   client.print(status);
-  client.println(status == 200 ? F(" OK") : F(" Not Found"));
+  if(status == 200) client.println(F(" OK"));
+  else if(status == 400) client.println(F(" Bad Request"));
+  else client.println(F(" Not Found"));
   client.print(F("Content-Type: "));
   client.println(contentType);
   client.println(F("Cache-Control: no-store"));
@@ -2013,6 +2177,22 @@ static void r4SendWifiMonitorPage(WiFiClient &client)
 {
   r4SendWifiHeaders(client, "text/html; charset=utf-8");
   client.print(R4_WIFI_MONITOR_HTML);
+}
+
+/*---------------------------------------------------------------------------*/
+/*! @brief      Serve the station-credential setup form.
+*//*-------------------------------------------------------------------------*/
+static void r4SendWifiSetupPage(WiFiClient &client, char const * const message)
+{
+  r4SendWifiHeaders(client, "text/html; charset=utf-8");
+  client.print(R4_WIFI_SETUP_HTML_START);
+  if(message)
+  {
+    client.print(F("<p class=\"msg\">"));
+    client.print(message);
+    client.println(F("</p>"));
+  }
+  client.print(R4_WIFI_SETUP_HTML_FORM);
 }
 
 /*---------------------------------------------------------------------------*/
@@ -2062,6 +2242,15 @@ static void r4SendWifiStatus(WiFiClient &client, int16_t const temperature,
   client.print(r4WifiStateName(state));
   client.print(F("\",\"mode\":\""));
   client.print(mode);
+  client.print(F("\",\"wifi\":\""));
+  if(g_R4WifiMode == R4_WIFI_STATION_MONITOR) client.print(F("LAN"));
+  else if(g_R4WifiMode == R4_WIFI_DIRECT_MONITOR) client.print(F("DIRECT AP"));
+  else if(g_R4WifiMode == R4_WIFI_SETUP_AP) client.print(F("SETUP AP"));
+  else if(g_R4WifiMode == R4_WIFI_STATION_CONNECTING) client.print(F("CONNECTING"));
+  else if(g_R4WifiMode == R4_WIFI_ERROR) client.print(F("ERROR"));
+  else client.print(F("OFF"));
+  client.print(F("\",\"ip\":\""));
+  if(g_R4WifiMonitorActive) client.print(WiFi.localIP());
   client.print(F("\",\"temperature_c\":"));
   if(NumberDallasTempDevices && isTemperatureReadingValid(temperature))
   {
@@ -2157,12 +2346,170 @@ static void r4SendWifiCurve(WiFiClient &client)
 }
 
 /*---------------------------------------------------------------------------*/
-/*! @brief      Start an open, read-only local access point on demand.
+/*! @brief      Compute the compact persistent WiFi-record checksum.
+*//*-------------------------------------------------------------------------*/
+static uint8_t r4WifiConfigChecksum(tR4WifiConfig const * const config)
+{
+  uint8_t checksum = 0;
+  uint8_t const * bytes = (uint8_t const *)config;
+  for(uint16_t offset = 1; offset < sizeof(tR4WifiConfig) - 1; offset++)
+  {
+    checksum ^= bytes[offset];
+  }
+  return checksum;
+}
+
+/*---------------------------------------------------------------------------*/
+/*! @brief      Load credentials and the persistent monitor-enabled flag.
+*//*-------------------------------------------------------------------------*/
+static void r4LoadWifiConfig(void)
+{
+  EEPROM.get(EEPROM_ADDRESS_WIFI_CONFIG, g_R4WifiConfig);
+  g_R4WifiConfig.ssid[WIFI_SSID_MAX_LENGTH] = 0;
+  g_R4WifiConfig.password[WIFI_PASSWORD_MAX_LENGTH] = 0;
+  g_R4WifiConfigValid = g_R4WifiConfig.magic == WIFI_CONFIG_MAGIC &&
+    g_R4WifiConfig.version == WIFI_CONFIG_VERSION &&
+    g_R4WifiConfig.monitorEnabled <= 1 &&
+    g_R4WifiConfig.checksum == r4WifiConfigChecksum(&g_R4WifiConfig);
+  if(!g_R4WifiConfigValid)
+  {
+    memset(&g_R4WifiConfig, 0, sizeof(g_R4WifiConfig));
+    g_R4WifiConfig.magic = WIFI_CONFIG_MAGIC;
+    g_R4WifiConfig.version = WIFI_CONFIG_VERSION;
+  }
+}
+
+/*---------------------------------------------------------------------------*/
+/*! @brief      Persist credentials and monitor state in the unused EEPROM tail.
+*//*-------------------------------------------------------------------------*/
+static void r4SaveWifiConfig(void)
+{
+  g_R4WifiConfig.magic = WIFI_CONFIG_MAGIC;
+  g_R4WifiConfig.version = WIFI_CONFIG_VERSION;
+  g_R4WifiConfig.ssid[WIFI_SSID_MAX_LENGTH] = 0;
+  g_R4WifiConfig.password[WIFI_PASSWORD_MAX_LENGTH] = 0;
+  g_R4WifiConfig.checksum = r4WifiConfigChecksum(&g_R4WifiConfig);
+  EEPROM.put(EEPROM_ADDRESS_WIFI_CONFIG, g_R4WifiConfig);
+  g_R4WifiConfigValid = true;
+}
+
+/*---------------------------------------------------------------------------*/
+/*! @brief      Erase credentials, disable monitoring and stop the radio.
+*//*-------------------------------------------------------------------------*/
+static void r4ClearWifiConfig(void)
+{
+  r4StopWifi();
+  memset(&g_R4WifiConfig, 0, sizeof(g_R4WifiConfig));
+  g_R4WifiConfig.magic = WIFI_CONFIG_MAGIC;
+  g_R4WifiConfig.version = WIFI_CONFIG_VERSION;
+  r4SaveWifiConfig();
+  Serial.println(F("WIFI CONFIG CLEARED"));
+  r4PrintWifiStatus();
+}
+
+/*---------------------------------------------------------------------------*/
+/*! @brief      Stop all network runtime state without erasing credentials.
+*//*-------------------------------------------------------------------------*/
+static void r4StopWifi(void)
+{
+  g_R4WifiClient.stop();
+  g_R4WifiServer.end();
+  WiFi.end();
+  g_R4WifiMonitorActive = false;
+  g_R4WifiMode = R4_WIFI_OFF;
+  g_R4WifiRequestLength = 0;
+  g_R4WifiHeaderLength = 0;
+  g_R4WifiContentLength = 0;
+  g_R4WifiRestartTime = 0;
+  g_R4WifiStatusCheckTime = 0;
+}
+
+/*---------------------------------------------------------------------------*/
+/*! @brief      Start the configured station connection without waiting.
+*//*-------------------------------------------------------------------------*/
+static void r4StartConfiguredWifi(void)
+{
+  if(g_R4MatrixDebugActive)
+  {
+    Serial.println(F("WIFI REFUSED: RESET TO EXIT MATRIX DEBUG"));
+    return;
+  }
+  if(!g_R4WifiConfig.monitorEnabled)
+  {
+    r4StopWifi();
+    return;
+  }
+  if(!g_R4WifiConfigValid || g_R4WifiConfig.ssid[0] == 0)
+  {
+    r4StartWifiSetupAp(false);
+    return;
+  }
+  r4StopWifi();
+  if(WiFi.status() == WL_NO_MODULE)
+  {
+    g_R4WifiMode = R4_WIFI_ERROR;
+    Serial.println(F("WIFI ERROR: MODULE NOT FOUND"));
+    return;
+  }
+  Serial.print(F("WIFI: CONNECTING TO "));
+  Serial.println(g_R4WifiConfig.ssid);
+  if(g_R4WifiConfig.password[0])
+  {
+    WiFi.begin(g_R4WifiConfig.ssid, g_R4WifiConfig.password);
+  }
+  else
+  {
+    WiFi.begin(g_R4WifiConfig.ssid);
+  }
+  g_R4WifiMode = R4_WIFI_STATION_CONNECTING;
+  g_R4WifiConnectDeadline = millis() + WIFI_CONNECT_TIMEOUT_MS;
+}
+
+/*---------------------------------------------------------------------------*/
+/*! @brief      Start the temporary credential setup/fallback access point.
+*//*-------------------------------------------------------------------------*/
+static void r4StartWifiSetupAp(bool const fallback)
+{
+  if(g_R4MatrixDebugActive)
+  {
+    Serial.println(F("WIFI SETUP REFUSED: RESET TO EXIT MATRIX DEBUG"));
+    return;
+  }
+  r4StopWifi();
+  if(WiFi.status() == WL_NO_MODULE)
+  {
+    g_R4WifiMode = R4_WIFI_ERROR;
+    Serial.println(F("WIFI SETUP ERROR: MODULE NOT FOUND"));
+    return;
+  }
+  uint8_t const status = WiFi.beginAP("NZHS-Annealer-Setup");
+  if(status != WL_AP_LISTENING && status != WL_AP_CONNECTED)
+  {
+    g_R4WifiMode = R4_WIFI_ERROR;
+    Serial.print(F("WIFI SETUP ERROR: AP STATUS "));
+    Serial.println(status);
+    WiFi.end();
+    return;
+  }
+  g_R4WifiServer.begin();
+  g_R4WifiMonitorActive = true;
+  g_R4WifiMode = R4_WIFI_SETUP_AP;
+  Serial.println(fallback ? F("WIFI: SAVED NETWORK UNAVAILABLE; SETUP AP ACTIVE") :
+                              F("WIFI SETUP AP ACTIVE"));
+  Serial.println(F("SSID: NZHS-Annealer-Setup (open)"));
+  Serial.print(F("Open http://"));
+  Serial.println(WiFi.localIP());
+}
+
+/*---------------------------------------------------------------------------*/
+/*! @brief      Preserve the original on-demand direct read-only monitor AP.
 *//*-------------------------------------------------------------------------*/
 static void r4BeginWifiMonitor(void)
 {
+  r4StopWifi();
   if(WiFi.status() == WL_NO_MODULE)
   {
+    g_R4WifiMode = R4_WIFI_ERROR;
     Serial.println(F("WIFI MONITOR ERROR: WIFI MODULE NOT FOUND"));
     return;
   }
@@ -2170,6 +2517,7 @@ static void r4BeginWifiMonitor(void)
   uint8_t const status = WiFi.beginAP("NZHS-Annealer");
   if(status != WL_AP_LISTENING && status != WL_AP_CONNECTED)
   {
+    g_R4WifiMode = R4_WIFI_ERROR;
     Serial.print(F("WIFI MONITOR ERROR: AP STATUS "));
     Serial.println(status);
     WiFi.end();
@@ -2177,6 +2525,7 @@ static void r4BeginWifiMonitor(void)
   }
   g_R4WifiServer.begin();
   g_R4WifiMonitorActive = true;
+  g_R4WifiMode = R4_WIFI_DIRECT_MONITOR;
   Serial.println(F("WIFI MONITOR ACTIVE - RESET TO EXIT"));
   Serial.println(F("SSID: NZHS-Annealer (open, read-only)"));
   Serial.print(F("Open http://"));
@@ -2184,13 +2533,235 @@ static void r4BeginWifiMonitor(void)
 }
 
 /*---------------------------------------------------------------------------*/
-/*! @brief      Service at most one short HTTP request without waiting.
+/*! @brief      Persist and apply the visible monitor ON/OFF setting.
+*//*-------------------------------------------------------------------------*/
+static void r4SetWifiMonitorEnabled(bool const enabled)
+{
+  g_R4WifiConfig.monitorEnabled = enabled ? 1 : 0;
+  r4SaveWifiConfig();
+  if(enabled) r4StartConfiguredWifi();
+  else r4StopWifi();
+}
+
+/*---------------------------------------------------------------------------*/
+/*! @brief      Confirm DHCP has supplied a usable non-zero local address.
+*//*-------------------------------------------------------------------------*/
+static bool r4WifiHasIpAddress(void)
+{
+  IPAddress const address = WiFi.localIP();
+  return address[0] || address[1] || address[2] || address[3];
+}
+
+/*---------------------------------------------------------------------------*/
+/*! @brief      Print current network mode and usable address over USB.
+*//*-------------------------------------------------------------------------*/
+static void r4PrintWifiStatus(void)
+{
+  Serial.print(F("WIFI STATUS: "));
+  if(g_R4WifiMode == R4_WIFI_OFF) Serial.print(F("OFF"));
+  else if(g_R4WifiMode == R4_WIFI_STATION_CONNECTING) Serial.print(F("CONNECTING"));
+  else if(g_R4WifiMode == R4_WIFI_STATION_MONITOR) Serial.print(F("LAN"));
+  else if(g_R4WifiMode == R4_WIFI_SETUP_AP) Serial.print(F("SETUP AP"));
+  else if(g_R4WifiMode == R4_WIFI_DIRECT_MONITOR) Serial.print(F("DIRECT AP"));
+  else Serial.print(F("ERROR"));
+  Serial.print(F(" IP="));
+  if(r4WifiHasIpAddress()) Serial.println(WiFi.localIP());
+  else Serial.println(F("--"));
+}
+
+/*---------------------------------------------------------------------------*/
+/*! @brief      Advance station connection and fallback without blocking.
+*//*-------------------------------------------------------------------------*/
+static void r4UpdateWifiConnection(void)
+{
+  uint32_t const currentTime = millis();
+  bool const canReconfigure = g_SystemState != STATE_PRELOAD &&
+    g_SystemState != STATE_ANNEALING && g_SystemState != STATE_DROPPING &&
+    g_SystemState != STATE_RELOADING && g_SystemState != STATE_ANALYSING &&
+    g_SystemState != STATE_ANALYSIS_GATE_OPEN;
+  if(g_R4WifiRestartTime && hasTimeElapsed(g_R4WifiRestartTime, currentTime) &&
+     canReconfigure)
+  {
+    g_R4WifiRestartTime = 0;
+    r4StartConfiguredWifi();
+    return;
+  }
+  if(!canReconfigure ||
+     !hasTimeElapsed(g_R4WifiStatusCheckTime, currentTime))
+  {
+    return;
+  }
+  g_R4WifiStatusCheckTime = currentTime +
+    (g_R4WifiMode == R4_WIFI_STATION_CONNECTING ? 250UL : 1000UL);
+  if(g_R4WifiMode == R4_WIFI_STATION_CONNECTING)
+  {
+    if(WiFi.status() == WL_CONNECTED && r4WifiHasIpAddress())
+    {
+      g_R4WifiServer.begin();
+      g_R4WifiMonitorActive = true;
+      g_R4WifiMode = R4_WIFI_STATION_MONITOR;
+      Serial.print(F("WIFI MONITOR LAN: http://"));
+      Serial.println(WiFi.localIP());
+    }
+    else if(hasTimeElapsed(g_R4WifiConnectDeadline, currentTime) && canReconfigure)
+    {
+      r4StartWifiSetupAp(true);
+    }
+  }
+  else if(g_R4WifiMode == R4_WIFI_STATION_MONITOR &&
+          WiFi.status() != WL_CONNECTED && canReconfigure)
+  {
+    Serial.println(F("WIFI: CONNECTION LOST; RECONNECTING"));
+    r4StartConfiguredWifi();
+  }
+}
+
+/*---------------------------------------------------------------------------*/
+/*! @brief      Decode one hexadecimal form-escape digit.
+*//*-------------------------------------------------------------------------*/
+static int8_t r4WifiHexNibble(char const value)
+{
+  if(value >= '0' && value <= '9') return value - '0';
+  char const upper = value & 0xDF;
+  if(upper >= 'A' && upper <= 'F') return upper - 'A' + 10;
+  return -1;
+}
+
+/*---------------------------------------------------------------------------*/
+/*! @brief      Decode one application/x-www-form-urlencoded field.
+*//*-------------------------------------------------------------------------*/
+static bool r4DecodeWifiFormField(char const * const body,
+                                  char const * const key,
+                                  char * const output,
+                                  uint8_t const outputLength)
+{
+  size_t const keyLength = strlen(key);
+  char const * value = body;
+  while(value && *value)
+  {
+    if((value == body || value[-1] == '&') &&
+       strncmp(value, key, keyLength) == 0 && value[keyLength] == '=')
+    {
+      value += keyLength + 1;
+      uint8_t written = 0;
+      while(*value && *value != '&' && written + 1 < outputLength)
+      {
+        char decoded = *value++;
+        if(decoded == '+') decoded = ' ';
+        else if(decoded == '%')
+        {
+          if(!value[0] || !value[1]) return false;
+          char const high = *value++;
+          char const low = *value++;
+          int8_t const highValue = r4WifiHexNibble(high);
+          int8_t const lowValue = r4WifiHexNibble(low);
+          if(highValue < 0 || lowValue < 0) return false;
+          decoded = (highValue << 4) | lowValue;
+        }
+        output[written++] = decoded;
+      }
+      output[written] = 0;
+      return true;
+    }
+    value = strchr(value, '&');
+    if(value) value++;
+  }
+  output[0] = 0;
+  return false;
+}
+
+/*---------------------------------------------------------------------------*/
+/*! @brief      Route a complete fixed-buffer HTTP request.
+*//*-------------------------------------------------------------------------*/
+static void r4HandleWifiRequest(WiFiClient &client,
+                                int16_t const temperature,
+                                uint16_t const current_ma,
+                                uint16_t const casesAnnealed,
+                                bool const fanIsOn)
+{
+  g_R4WifiRequest[g_R4WifiRequestLength] = 0;
+  char * method = g_R4WifiRequest;
+  char * requestTarget = strchr(method, ' ');
+  if(!requestTarget)
+  {
+    r4SendWifiHeaders(client, "text/plain", 400);
+    client.println(F("Bad request"));
+    return;
+  }
+  *requestTarget++ = 0;
+  char * requestTargetEnd = strchr(requestTarget, ' ');
+  if(requestTargetEnd) *requestTargetEnd = 0;
+  requestTargetEnd = strchr(requestTarget, '?');
+  if(requestTargetEnd) *requestTargetEnd = 0;
+  uint8_t const requestTargetLength = strlen(requestTarget);
+  if(requestTargetLength > 1 && requestTarget[requestTargetLength - 1] == '/')
+  {
+    requestTarget[requestTargetLength - 1] = 0;
+  }
+
+  if(strcmp(method, "POST") == 0 && strcmp(requestTarget, "/setup/save") == 0 &&
+     g_R4WifiMode == R4_WIFI_SETUP_AP)
+  {
+    char * const body = g_R4WifiRequest + g_R4WifiHeaderLength;
+    char ssid[WIFI_SSID_MAX_LENGTH + 1] = {};
+    char password[WIFI_PASSWORD_MAX_LENGTH + 1] = {};
+    bool const ssidPresent = r4DecodeWifiFormField(body, "ssid", ssid, sizeof(ssid));
+    bool const passwordPresent = r4DecodeWifiFormField(body, "password", password,
+                                                       sizeof(password));
+    if(!ssidPresent || !passwordPresent || ssid[0] == 0)
+    {
+      r4SendWifiSetupPage(client, "Enter a valid network name.");
+      return;
+    }
+    strncpy(g_R4WifiConfig.ssid, ssid, sizeof(g_R4WifiConfig.ssid));
+    strncpy(g_R4WifiConfig.password, password, sizeof(g_R4WifiConfig.password));
+    g_R4WifiConfig.ssid[WIFI_SSID_MAX_LENGTH] = 0;
+    g_R4WifiConfig.password[WIFI_PASSWORD_MAX_LENGTH] = 0;
+    g_R4WifiConfig.monitorEnabled = 1;
+    r4SaveWifiConfig();
+    memset(password, 0, sizeof(password));
+    memset(body, 0, g_R4WifiContentLength);
+    r4SendWifiSetupPage(client, "Saved. Reconnect to your normal WiFi network.");
+    g_R4WifiRestartTime = millis() + 1500UL;
+    Serial.print(F("WIFI: SAVED NETWORK "));
+    Serial.println(g_R4WifiConfig.ssid);
+  }
+  else if(strcmp(method, "GET") == 0 && strcmp(requestTarget, "/api/status") == 0)
+  {
+    r4SendWifiStatus(client, temperature, current_ma, casesAnnealed, fanIsOn);
+  }
+  else if(strcmp(method, "GET") == 0 && strcmp(requestTarget, "/api/curve") == 0)
+  {
+    r4SendWifiCurve(client);
+  }
+  else if(strcmp(method, "GET") == 0 &&
+          (strcmp(requestTarget, "/") == 0 || strcmp(requestTarget, "/setup") == 0))
+  {
+    if(g_R4WifiMode == R4_WIFI_SETUP_AP) r4SendWifiSetupPage(client);
+    else r4SendWifiMonitorPage(client);
+  }
+  else if(strcmp(method, "GET") == 0 && strcmp(requestTarget, "/favicon.ico") == 0)
+  {
+    r4SendWifiHeaders(client, "image/x-icon");
+  }
+  else
+  {
+    Serial.print(F("WIFI HTTP 404: "));
+    Serial.println(requestTarget);
+    r4SendWifiHeaders(client, "text/plain", 404);
+    client.println(F("Not found"));
+  }
+}
+
+/*---------------------------------------------------------------------------*/
+/*! @brief      Service one bounded HTTP request without waiting for a client.
 *//*-------------------------------------------------------------------------*/
 static void r4UpdateWifiMonitor(int16_t const temperature,
                                 uint16_t const current_ma,
                                 uint16_t const casesAnnealed,
                                 bool const fanIsOn)
 {
+  r4UpdateWifiConnection();
   if(!g_R4WifiMonitorActive)
   {
     return;
@@ -2204,60 +2775,59 @@ static void r4UpdateWifiMonitor(int16_t const temperature,
       return;
     }
     g_R4WifiRequestLength = 0;
-    g_R4WifiClientDeadline = millis() + 750UL;
+    g_R4WifiHeaderLength = 0;
+    g_R4WifiContentLength = 0;
+    g_R4WifiClientDeadline = millis() + 4000UL;
   }
 
   uint8_t bytesRead = 0;
-  while(g_R4WifiClient.available() && bytesRead < 64)
+  while(g_R4WifiClient.available() && bytesRead < 96)
   {
     char const incoming = g_R4WifiClient.read();
     bytesRead++;
-    if(incoming == '\n')
+    if(g_R4WifiRequestLength + 1 >= sizeof(g_R4WifiRequest))
     {
-      g_R4WifiRequestLine[g_R4WifiRequestLength] = 0;
-      char * requestTarget = g_R4WifiRequestLine;
-      if(strncmp(requestTarget, "GET ", 4) == 0)
-      {
-        requestTarget += 4;
-      }
-      char * requestTargetEnd = strchr(requestTarget, ' ');
-      if(requestTargetEnd) *requestTargetEnd = 0;
-      requestTargetEnd = strchr(requestTarget, '?');
-      if(requestTargetEnd) *requestTargetEnd = 0;
-      uint8_t const requestTargetLength = strlen(requestTarget);
-      if(requestTargetLength > 1 && requestTarget[requestTargetLength - 1] == '/')
-      {
-        requestTarget[requestTargetLength - 1] = 0;
-      }
-
-      if(strcmp(requestTarget, "/api/status") == 0)
-      {
-        r4SendWifiStatus(g_R4WifiClient, temperature, current_ma,
-                         casesAnnealed, fanIsOn);
-      }
-      else if(strcmp(requestTarget, "/api/curve") == 0)
-      {
-        r4SendWifiCurve(g_R4WifiClient);
-      }
-      else if(strcmp(requestTarget, "/") == 0)
-      {
-        r4SendWifiMonitorPage(g_R4WifiClient);
-      }
-      else
-      {
-        Serial.print(F("WIFI HTTP 404: "));
-        Serial.println(requestTarget);
-        r4SendWifiHeaders(g_R4WifiClient, "text/plain", 404);
-        g_R4WifiClient.println(F("Not found"));
-      }
+      r4SendWifiHeaders(g_R4WifiClient, "text/plain", 400);
+      g_R4WifiClient.println(F("Request too large"));
       g_R4WifiClient.stop();
       g_R4WifiRequestLength = 0;
       return;
     }
-    if(incoming != '\r' && g_R4WifiRequestLength < sizeof(g_R4WifiRequestLine) - 1)
+    g_R4WifiRequest[g_R4WifiRequestLength++] = incoming;
+    g_R4WifiRequest[g_R4WifiRequestLength] = 0;
+
+    if(g_R4WifiHeaderLength == 0 && g_R4WifiRequestLength >= 4 &&
+       memcmp(g_R4WifiRequest + g_R4WifiRequestLength - 4, "\r\n\r\n", 4) == 0)
     {
-      g_R4WifiRequestLine[g_R4WifiRequestLength++] = incoming;
+      g_R4WifiHeaderLength = g_R4WifiRequestLength;
+      char const * contentLength = strstr(g_R4WifiRequest, "Content-Length:");
+      if(contentLength)
+      {
+        g_R4WifiContentLength = atoi(contentLength + 15);
+      }
+      if(g_R4WifiHeaderLength + g_R4WifiContentLength >= sizeof(g_R4WifiRequest))
+      {
+        r4SendWifiHeaders(g_R4WifiClient, "text/plain", 400);
+        g_R4WifiClient.println(F("Request too large"));
+        g_R4WifiClient.stop();
+        g_R4WifiRequestLength = 0;
+        return;
+      }
     }
+
+    if(g_R4WifiHeaderLength &&
+       g_R4WifiRequestLength >= g_R4WifiHeaderLength + g_R4WifiContentLength)
+    {
+      r4HandleWifiRequest(g_R4WifiClient, temperature, current_ma,
+                          casesAnnealed, fanIsOn);
+      g_R4WifiClient.stop();
+      g_R4WifiRequestLength = 0;
+      return;
+    }
+  }
+  if(bytesRead)
+  {
+    g_R4WifiClientDeadline = millis() + 4000UL;
   }
   if(hasTimeElapsed(g_R4WifiClientDeadline, millis()))
   {
@@ -2424,7 +2994,12 @@ void loop()
             g_SystemState == STATE_ANALYSIS_MENU ||
             g_SystemState == STATE_ANALYSIS_CONFIG ||
             g_SystemState == STATE_DIAGNOSTICS ||
-            g_SystemState == STATE_INFO)
+            g_SystemState == STATE_INFO
+            #if NZHS_HAS_WIFI
+            || g_SystemState == STATE_WIFI_SETTINGS ||
+               g_SystemState == STATE_WIFI_RESET_CONFIRM
+            #endif
+            )
     {
       // Menus always leave through their visible BACK > item and UP.
     }
@@ -2495,6 +3070,20 @@ void loop()
       {
         advanceSettingsScreenSelection();
       }
+      #if NZHS_HAS_WIFI
+      else if(g_SystemState == STATE_WIFI_SETTINGS)
+      {
+        g_R4WifiSettingsSelection =
+          (tWifiSettingsSelection)((g_R4WifiSettingsSelection + 1) %
+                                   WIFI_SETTINGS_SELECTION_COUNT);
+      }
+      else if(g_SystemState == STATE_WIFI_RESET_CONFIRM)
+      {
+        g_R4WifiResetSelection =
+          (tWifiResetSelection)((g_R4WifiResetSelection + 1) %
+                                WIFI_RESET_SELECTION_COUNT);
+      }
+      #endif
       else if(g_SystemState == STATE_ANALYSIS_MENU)
       {
         advanceAnalysisMenuSelection();
@@ -2655,6 +3244,54 @@ void loop()
       drawSettingsScreen();
     }
     break;
+
+    #if NZHS_HAS_WIFI
+    case STATE_WIFI_SETTINGS:
+    {
+      updateSystemState(g_SystemState);
+      if(upKey && !upKeyPrev)
+      {
+        if(g_R4WifiSettingsSelection == WIFI_SETTINGS_MONITOR)
+        {
+          r4SetWifiMonitorEnabled(!g_R4WifiConfig.monitorEnabled);
+        }
+        else if(g_R4WifiSettingsSelection == WIFI_SETTINGS_SETUP)
+        {
+          r4StartWifiSetupAp(false);
+        }
+        else if(g_R4WifiSettingsSelection == WIFI_SETTINGS_RESET)
+        {
+          g_R4WifiResetSelection = WIFI_RESET_BACK;
+          updateSystemState(STATE_WIFI_RESET_CONFIRM);
+          break;
+        }
+        else
+        {
+          updateSystemState(STATE_SETTINGS);
+          break;
+        }
+      }
+      drawWifiSettingsScreen();
+    }
+    break;
+
+    case STATE_WIFI_RESET_CONFIRM:
+    {
+      updateSystemState(g_SystemState);
+      if(upKey && !upKeyPrev)
+      {
+        if(g_R4WifiResetSelection == WIFI_RESET_CONFIRM)
+        {
+          r4ClearWifiConfig();
+          g_R4WifiSettingsSelection = WIFI_SETTINGS_MONITOR;
+        }
+        updateSystemState(STATE_WIFI_SETTINGS);
+        break;
+      }
+      drawWifiResetScreen();
+    }
+    break;
+    #endif
 
     case STATE_PROFILES:
     {
@@ -4661,6 +5298,13 @@ static void updateSettingsScreenSetting(void)
   {
     setDumpButtonEnabled(!g_UserSettings.dumpButtonEnabled);
   }
+  #if NZHS_HAS_WIFI
+  else if(g_UserSettings.settingsScreenSelection == SETTINGS_SCREEN_WIFI)
+  {
+    g_R4WifiSettingsSelection = WIFI_SETTINGS_MONITOR;
+    updateSystemState(STATE_WIFI_SETTINGS);
+  }
+  #endif
   else
   {
     returnToStoppedScreen();
@@ -5199,6 +5843,44 @@ static void drawStoppedScreen(bool const fanIsOn, int16_t const temperature, uin
 *//*-------------------------------------------------------------------------*/
 static void drawSettingsScreen(void)
 {
+  #if NZHS_HAS_WIFI
+  uint8_t const selectedRow = g_UserSettings.settingsScreenSelection + 1;
+  uint8_t const firstRow = selectedRow > 3 ? selectedRow - 3 : 0;
+  beginFullWidthScreen();
+  for(uint8_t row = 0; row < 4; row++)
+  {
+    uint8_t const item = firstRow + row;
+    display.setCursor(0, row * 8);
+    if(item == 0)
+    {
+      display.print(F("SETTINGS"));
+      continue;
+    }
+    tSettingsScreenSelection const selection =
+      (tSettingsScreenSelection)(item - 1);
+    setTextSelected(selection == g_UserSettings.settingsScreenSelection);
+    if(selection == SETTINGS_SCREEN_AUTO_RESTART)
+    {
+      display.print(F("RESTART: "));
+      display.print(g_UserSettings.autoRestartAfterCooldown ? FPSTR(TEXT_ON) : FPSTR(TEXT_OFF));
+    }
+    else if(selection == SETTINGS_SCREEN_DUMP_BUTTON)
+    {
+      display.print(F("DUMP: "));
+      display.print(g_UserSettings.dumpButtonEnabled ? FPSTR(TEXT_ON) : FPSTR(TEXT_OFF));
+    }
+    else if(selection == SETTINGS_SCREEN_WIFI)
+    {
+      display.print(F("WIFI >"));
+    }
+    else
+    {
+      display.print(FPSTR(TEXT_BACK_ITEM));
+    }
+    display.setTextColor(WHITE);
+  }
+  display.display();
+  #else
   beginFullWidthScreen();
   display.setCursor(0,0);
   display.print(F("SETTINGS"));
@@ -5217,7 +5899,73 @@ static void drawSettingsScreen(void)
   display.print(FPSTR(TEXT_BACK_ITEM));
   display.setTextColor(WHITE);
   display.display();
+  #endif
 }
+
+#if NZHS_HAS_WIFI
+/*---------------------------------------------------------------------------*/
+/*! @brief      Draw persistent WiFi monitor and setup actions.
+*//*-------------------------------------------------------------------------*/
+static void drawWifiSettingsScreen(void)
+{
+  uint8_t const selectedRow = g_R4WifiSettingsSelection + 1;
+  uint8_t const firstRow = selectedRow > 3 ? selectedRow - 3 : 0;
+  beginFullWidthScreen();
+  for(uint8_t row = 0; row < 4; row++)
+  {
+    uint8_t const item = firstRow + row;
+    display.setCursor(0, row * 8);
+    if(item == 0)
+    {
+      display.print(F("WIFI"));
+      continue;
+    }
+    tWifiSettingsSelection const selection =
+      (tWifiSettingsSelection)(item - 1);
+    setTextSelected(selection == g_R4WifiSettingsSelection);
+    if(selection == WIFI_SETTINGS_MONITOR)
+    {
+      display.print(F("MONITOR: "));
+      display.print(g_R4WifiConfig.monitorEnabled ? FPSTR(TEXT_ON) : FPSTR(TEXT_OFF));
+    }
+    else if(selection == WIFI_SETTINGS_SETUP)
+    {
+      display.print(g_R4WifiMode == R4_WIFI_SETUP_AP ? F("SETUP: ACTIVE") : F("SETUP >"));
+    }
+    else if(selection == WIFI_SETTINGS_RESET)
+    {
+      display.print(F("RESET >"));
+    }
+    else
+    {
+      display.print(FPSTR(TEXT_BACK_ITEM));
+    }
+    display.setTextColor(WHITE);
+  }
+  display.display();
+}
+
+/*---------------------------------------------------------------------------*/
+/*! @brief      Require an explicit second-screen selection before erasing.
+*//*-------------------------------------------------------------------------*/
+static void drawWifiResetScreen(void)
+{
+  beginFullWidthScreen();
+  display.setCursor(0,0);
+  display.print(F("RESET WIFI?"));
+  display.setCursor(0,8);
+  display.print(F("ERASE SSID/PASS"));
+  display.setCursor(0,16);
+  setTextSelected(g_R4WifiResetSelection == WIFI_RESET_CONFIRM);
+  display.print(F("CONFIRM >"));
+  display.setTextColor(WHITE);
+  display.setCursor(0,24);
+  setTextSelected(g_R4WifiResetSelection == WIFI_RESET_BACK);
+  display.print(FPSTR(TEXT_BACK_ITEM));
+  display.setTextColor(WHITE);
+  display.display();
+}
+#endif
 
 /*---------------------------------------------------------------------------*/
 /*! @brief      Draw a profile-slot selector, including a visible Back option.
@@ -5491,6 +6239,75 @@ static void drawDiagnosticsScreen(void)
 *//*-------------------------------------------------------------------------*/
 static void drawInfoScreen(void)
 {
+  #if NZHS_HAS_WIFI
+  beginFullWidthScreen();
+  for(uint8_t row = 0; row < 3; row++)
+  {
+    uint8_t const item = g_InfoScreenScroll + row;
+    display.setCursor(0, row * 8);
+    if(item == 0)
+    {
+      display.print(F("INFO"));
+    }
+    else if(item == 1)
+    {
+      display.print(F("LOW: "));
+      display.print(LOW_CURRENT_RATIO_PERCENT);
+      display.print(F("% N"));
+      display.print(LOW_CURRENT_BASELINE_CYCLES);
+    }
+    else if(item == 2)
+    {
+      display.print(F("BASE: "));
+      if(g_RunSafety.baselineCurrentCycles >= LOW_CURRENT_BASELINE_CYCLES)
+      {
+        display.print(g_RunSafety.baselineCurrent_ma/1000, DEC);
+        display.write('.');
+        display.print((g_RunSafety.baselineCurrent_ma%1000)/100, DEC);
+        display.write('A');
+      }
+      else
+      {
+        display.print(F("--"));
+      }
+    }
+    else if(item == 3)
+    {
+      refreshSupplyVoltage();
+      display.print(F("5V: "));
+      display.print(g_SupplyVoltage_mv/1000, DEC);
+      display.write('.');
+      display.print((g_SupplyVoltage_mv%1000)/100, DEC);
+      display.write('V');
+    }
+    else if(item == 4)
+    {
+      display.print(F("FW: "));
+      display.print(SOFTWARE_VERSION);
+    }
+    else if(item == 5)
+    {
+      display.print(F("WIFI: "));
+      if(g_R4WifiMode == R4_WIFI_OFF) display.print(F("OFF"));
+      else if(g_R4WifiMode == R4_WIFI_STATION_CONNECTING) display.print(F("CONNECT"));
+      else if(g_R4WifiMode == R4_WIFI_STATION_MONITOR) display.print(F("LAN"));
+      else if(g_R4WifiMode == R4_WIFI_SETUP_AP) display.print(F("SETUP AP"));
+      else if(g_R4WifiMode == R4_WIFI_DIRECT_MONITOR) display.print(F("DIRECT AP"));
+      else display.print(F("ERROR"));
+    }
+    else
+    {
+      display.print(F("IP: "));
+      if(g_R4WifiMonitorActive) display.print(WiFi.localIP());
+      else display.print(F("--"));
+    }
+  }
+  display.setCursor(0,24);
+  display.setTextColor(BLACK, WHITE);
+  display.print(FPSTR(TEXT_BACK_ITEM));
+  display.setTextColor(WHITE);
+  display.display();
+  #else
   beginFullWidthScreen();
   if(g_InfoScreenScroll == 0)
   {
@@ -5543,6 +6360,7 @@ static void drawInfoScreen(void)
   display.print(FPSTR(TEXT_BACK_ITEM));
   display.setTextColor(WHITE);
   display.display();
+  #endif
 }
 
 /*---------------------------------------------------------------------------*/
