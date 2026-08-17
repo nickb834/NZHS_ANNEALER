@@ -8,9 +8,7 @@
 //--Includes-------------------------------------------------------------------
 #include <SPI.h>
 #include <Wire.h>
-#include <avr/io.h>
-#include <avr/wdt.h>
-#include <util/atomic.h>
+#include "AnnealerPlatform.h"
 #include <EEPROM.h>
 #include <OneWire.h>
 #include <DallasTemperature.h>
@@ -503,6 +501,9 @@ typedef enum tStateMachineStates : uint8_t
   STATE_ANALYSIS_CONFIG,
   STATE_TARGET_TIMEOUT_WARNING,
   STATE_CURRENT_SENSOR_REQUIRED,
+  #if NZHS_PLATFORM_UNO_R4
+  STATE_PLATFORM_WARNING,
+  #endif
   STATE_UNKNOWN,
 } tStateMachineStates;
 
@@ -715,7 +716,11 @@ static const uint8_t g_FeederStepPin       = 12;
 static const uint8_t g_StartStopLedPin      = 4;
 static const uint8_t g_CoolingFanPin        = 7;
 static const uint8_t g_ModeLedPin           = 11;
+#if NZHS_PLATFORM_UNO_R3
 static const uint8_t g_PsuCurrentAdcPin     = 0;
+#else
+static const uint8_t g_PsuCurrentAdcPin     = A0;
+#endif
 static const uint8_t g_DropSolenoidPin      = 10;
 static const uint8_t g_TimeSetButtonPin     = 16;
 static const uint8_t g_FeederDirPin         = 13;
@@ -937,9 +942,28 @@ static uint32_t g_SupplyVoltageSampleTime = 0;
 // preserve the last state reached by the application.
 static tResetDiagnostics g_ResetDiagnostics __attribute__((section(".noinit")));
 
+#if NZHS_PLATFORM_UNO_R4
+static FspTimer g_R4FeederTimer;
+static Servo g_R4DropServo;
+static wdt_instance_ctrl_t g_R4WatchdogControl;
+static uint32_t g_R4FeederBasePeriod = 0;
+static volatile uint8_t g_R4FeederCompare = 0;
+static uint8_t g_R4AppliedFeederCompare = UINT8_MAX;
+static bool g_R4FeederTimerReady = false;
+static bool g_R4DropServoReady = false;
+static bool g_R4WatchdogReady = false;
+#endif
+
+#if NZHS_PLATFORM_UNO_R3
+  #define FEEDER_TIMER_COMPARE OCR2A
+#else
+  #define FEEDER_TIMER_COMPARE g_R4FeederCompare
+#endif
+
 // Run before normal C/C++ initialization. Capture the AVR reset flags and
 // disable a watchdog that may still be active after a watchdog reset. The Uno
 // bootloader can clear MCUSR first, so the recorded cause is best-effort.
+#if NZHS_PLATFORM_UNO_R3
 void captureResetDiagnostics(void) __attribute__((naked, used, section(".init3")));
 void captureResetDiagnostics(void)
 {
@@ -947,6 +971,30 @@ void captureResetDiagnostics(void)
   MCUSR = 0;
   wdt_disable();
 }
+#else
+static void captureResetDiagnostics(void)
+{
+  uint8_t resetFlags = 0;
+  if(R_SYSTEM->RSTSR1_b.WDTRF || R_SYSTEM->RSTSR1_b.IWDTRF)
+  {
+    resetFlags |= _BV(WDRF);
+  }
+  if(R_SYSTEM->RSTSR0_b.LVD0RF || R_SYSTEM->RSTSR0_b.LVD1RF ||
+     R_SYSTEM->RSTSR0_b.LVD2RF)
+  {
+    resetFlags |= _BV(BORF);
+  }
+  if(R_SYSTEM->RSTSR0 & R_SYSTEM_RSTSR0_PORF_Msk)
+  {
+    resetFlags |= _BV(PORF);
+  }
+  if(resetFlags == 0)
+  {
+    resetFlags = _BV(EXTRF);
+  }
+  g_ResetDiagnostics.resetFlags = resetFlags;
+}
+#endif
 
 //-- function declarations------------------------------------------------
 static void updateSystemState(tStateMachineStates const state);
@@ -1063,6 +1111,15 @@ static void printResetDiagnostics(void);
 static void drawStartupLogo(void) __attribute__((noinline));
 static void drawFaultScreen(__FlashStringHelper const * const line1,
                             __FlashStringHelper const * const line2) __attribute__((noinline));
+#if NZHS_PLATFORM_UNO_R4
+static void r4ConfigureFeederTimer(void);
+static void r4StartFeederTimer(void);
+static void r4ApplyFeederTimerCompare(void);
+static void r4FeederTimerCallback(timer_callback_args_t *args);
+static void r4BeginWatchdog(void);
+static void r4ResetWatchdog(void);
+static bool r4PlatformReady(void);
+#endif
 
 /*---------------------------------------------------------------------------*/
 /*! @brief      Initialize the Case Annealer.
@@ -1072,6 +1129,9 @@ static void drawFaultScreen(__FlashStringHelper const * const line1,
 *//*-------------------------------------------------------------------------*/
 void setup()
 {
+  #if NZHS_PLATFORM_UNO_R4
+  captureResetDiagnostics();
+  #endif
   if(g_ResetDiagnostics.magic != RESET_DIAGNOSTIC_MAGIC)
   {
     g_ResetDiagnostics.lastSystemState = STATE_UNKNOWN;
@@ -1081,7 +1141,9 @@ void setup()
 
   //TCCR0B = TCCR0B & B11111000 | B00000101; //PWM on D5 & D6 set to 61.04Hz Timer 0 -- Timer Used for system ms tick
  // TCCR2B = TCCR2B & B11111000 | B00000110; //PWM on D3 & D11 set to 122.55Hz Timer 2  <--- tiner 2
+  #if NZHS_PLATFORM_UNO_R3
   TCCR1B = TCCR1B & B11111000 | B00000101; //PWM on D9 & D10 of 30.64 Hz Timer 1   <---- USE IO9 PWM for drop gate Servo
+  #endif
 
   if(EEPROM.read(EEPROM_ADDRESS_CONFIG_MAGIC) != EEPROM_CONFIG_MAGIC)
   {
@@ -1095,11 +1157,12 @@ void setup()
   }
 
 //set timer2 interrupt
+  #if NZHS_PLATFORM_UNO_R3
   TCCR2A = 0;// set entire TCCR2A register to 0
   TCCR2B = 0;// same for TCCR2B
   TCNT2  = 0;//initialize counter value to 0
   // set compare match register - divide by microsteps to shorten step period
-  OCR2A = 170 / STEPPER_MICROSTEPS;
+  FEEDER_TIMER_COMPARE = 170 / STEPPER_MICROSTEPS;
   // turn on CTC mode
   TCCR2A |= (1 << WGM21);
   // Set CS20-22 bit for prescaler
@@ -1108,6 +1171,10 @@ void setup()
 
   // enable timer compare interrupt
   TIMSK2 |= (1 << OCIE2A);
+  #else
+  FEEDER_TIMER_COMPARE = 170 / STEPPER_MICROSTEPS;
+  r4ConfigureFeederTimer();
+  #endif
 
   // Setup IO.
   pinMode(g_StartStopButtonPin, INPUT_PULLUP);
@@ -1122,6 +1189,9 @@ void setup()
   pinMode(g_FeederStepPin,OUTPUT);
   pinMode(g_FeederDirPin,OUTPUT);
   pinMode(g_FeederStepperEnPin,OUTPUT);
+  #if NZHS_PLATFORM_UNO_R4
+  g_R4DropServoReady = g_R4DropServo.attach(g_DropServoPin, 500, 2500) != 0;
+  #endif
   digitalWrite(g_FeederDirPin,HIGH);
   digitalWrite(g_FeederStepperEnPin,LOW); //disable stepper driver
   closeDropGate();
@@ -1130,6 +1200,10 @@ void setup()
   turnAnnealerOff();
   turnCoolingFanOff();
   closeDropGate();
+  #if NZHS_PLATFORM_UNO_R4
+  analogReadResolution(10);
+  r4StartFeederTimer();
+  #endif
   Serial.begin(115200);
   #ifdef DEBUG
   delay(20);
@@ -1213,7 +1287,14 @@ void setup()
   sensors.setWaitForConversion(false);
   delay(TEMP_CONVERSION_TIME); // let the first temp read happen
   //setup the watchdog timer. it needs a boot every 500ms.
+  #if NZHS_PLATFORM_UNO_R3
   wdt_enable(WDTO_500MS);
+  #else
+  r4BeginWatchdog();
+  if(!g_R4FeederTimerReady) Serial.println(F("R4 INIT ERROR: FEED TIMER"));
+  if(!g_R4DropServoReady) Serial.println(F("R4 INIT ERROR: DROP SERVO"));
+  if(!g_R4WatchdogReady) Serial.println(F("R4 INIT ERROR: WATCHDOG"));
+  #endif
   digitalWrite(g_FeederStepperEnPin,HIGH); //disable stepper driver
 }
 /*---------------------------------------------------------------------------*/
@@ -1223,7 +1304,12 @@ void setup()
   @return       Never.
 *//*-------------------------------------------------------------------------*/
 
+#if NZHS_PLATFORM_UNO_R3
 ISR(TIMER2_COMPA_vect){//timer2 interrupt
+#else
+static void r4FeederTimerCallback(timer_callback_args_t *args){
+  (void)args;
+#endif
   if(StepsToGo)
 	  {
 	  if (StepToggle)
@@ -1242,9 +1328,9 @@ ISR(TIMER2_COMPA_vect){//timer2 interrupt
       {
           // set compare match register - divide by microsteps to shorten step period
           #if STEPPER_MICROSTEPS >= 4 //check we arent going to overflow the 8 bit timer register
-            OCR2A = 120 / STEPPER_MICROSTEPS;
+            FEEDER_TIMER_COMPARE = 120 / STEPPER_MICROSTEPS;
           #else
-            OCR2A = 170;
+            FEEDER_TIMER_COMPARE = 170;
           #endif
 
       }
@@ -1252,15 +1338,15 @@ ISR(TIMER2_COMPA_vect){//timer2 interrupt
       {
           // set compare match register - divide by microsteps to shorten step period
           #if STEPPER_MICROSTEPS >= 4 //check we arent going to overflow the 8 bit timer register
-            OCR2A = 800 / STEPPER_MICROSTEPS;
+            FEEDER_TIMER_COMPARE = 800 / STEPPER_MICROSTEPS;
           #else
-            OCR2A = 254;
+            FEEDER_TIMER_COMPARE = 254;
           #endif
       }
       else //speed up again once new case is picked
       {
         // set compare match register - divide by microsteps to shorten step period
-          OCR2A = 170 / STEPPER_MICROSTEPS;
+          FEEDER_TIMER_COMPARE = 170 / STEPPER_MICROSTEPS;
       }
 		StepsToGo = StepsToGo - 1;
 	  }
@@ -1280,7 +1366,109 @@ ISR(TIMER2_COMPA_vect){//timer2 interrupt
     turnAnnealerOff();
   }
 
+  #if NZHS_PLATFORM_UNO_R4
+  r4ApplyFeederTimerCompare();
+  #endif
+
 }
+
+#if NZHS_PLATFORM_UNO_R4
+/*---------------------------------------------------------------------------*/
+/*! @brief      Reserve a Renesas periodic timer for feeder step pulses.
+*//*-------------------------------------------------------------------------*/
+static void r4ConfigureFeederTimer(void)
+{
+  uint8_t timerType = GPT_TIMER;
+  int8_t const channel = FspTimer::get_available_timer(timerType);
+  if(channel < 0)
+  {
+    return;
+  }
+  float const initialFrequency = 16000000.0f /
+    (256.0f * (FEEDER_TIMER_COMPARE + 1));
+  g_R4FeederTimerReady = g_R4FeederTimer.begin(
+    TIMER_MODE_PERIODIC, timerType, channel, initialFrequency, 0.0f,
+    r4FeederTimerCallback);
+  if(g_R4FeederTimerReady)
+  {
+    g_R4FeederTimer.set_period_buffer(false);
+    g_R4FeederTimerReady = g_R4FeederTimer.setup_overflow_irq(12) &&
+                           g_R4FeederTimer.open();
+  }
+  if(g_R4FeederTimerReady)
+  {
+    g_R4FeederBasePeriod = g_R4FeederTimer.get_period_raw();
+    g_R4AppliedFeederCompare = FEEDER_TIMER_COMPARE;
+  }
+}
+
+/*---------------------------------------------------------------------------*/
+/*! @brief      Start feeder callbacks after all shield pins are configured.
+*//*-------------------------------------------------------------------------*/
+static void r4StartFeederTimer(void)
+{
+  if(g_R4FeederTimerReady)
+  {
+    g_R4FeederTimerReady = g_R4FeederTimer.start();
+  }
+}
+
+/*---------------------------------------------------------------------------*/
+/*! @brief      Match the AVR Timer2 compare periods on the Renesas timer.
+*//*-------------------------------------------------------------------------*/
+static void r4ApplyFeederTimerCompare(void)
+{
+  uint8_t const timerCompare = FEEDER_TIMER_COMPARE;
+  if(!g_R4FeederTimerReady || timerCompare == g_R4AppliedFeederCompare)
+  {
+    return;
+  }
+  uint16_t const initialCounts = (170 / STEPPER_MICROSTEPS) + 1;
+  uint32_t const period =
+    ((uint64_t)g_R4FeederBasePeriod * (timerCompare + 1) +
+     (initialCounts / 2)) / initialCounts;
+  g_R4FeederTimer.set_period(period);
+  g_R4AppliedFeederCompare = timerCompare;
+}
+
+/*---------------------------------------------------------------------------*/
+/*! @brief      Start the RA4M1 watchdog after lengthy setup work is complete.
+*//*-------------------------------------------------------------------------*/
+static void r4BeginWatchdog(void)
+{
+  wdt_cfg_t config = {};
+  config.timeout = WDT_TIMEOUT_16384;
+  config.clock_division = WDT_CLOCK_DIVISION_2048;
+  config.window_start = WDT_WINDOW_START_100;
+  config.window_end = WDT_WINDOW_END_0;
+  config.reset_control = WDT_RESET_CONTROL_RESET;
+  config.stop_control = WDT_STOP_CONTROL_ENABLE;
+  g_R4WatchdogReady = R_WDT_Open(&g_R4WatchdogControl, &config) == FSP_SUCCESS;
+  if(g_R4WatchdogReady)
+  {
+    R_WDT_Refresh(&g_R4WatchdogControl);
+  }
+}
+
+/*---------------------------------------------------------------------------*/
+/*! @brief      Refresh the RA4M1 watchdog when its backend opened correctly.
+*//*-------------------------------------------------------------------------*/
+static void r4ResetWatchdog(void)
+{
+  if(g_R4WatchdogReady)
+  {
+    R_WDT_Refresh(&g_R4WatchdogControl);
+  }
+}
+
+/*---------------------------------------------------------------------------*/
+/*! @brief      Require all timing and gate safety backends before a run.
+*//*-------------------------------------------------------------------------*/
+static bool r4PlatformReady(void)
+{
+  return g_R4FeederTimerReady && g_R4DropServoReady && g_R4WatchdogReady;
+}
+#endif
 
 /*---------------------------------------------------------------------------*/
 /*! @brief      Main Loop.
@@ -1320,7 +1508,11 @@ void loop()
   static uint16_t CasesAnnealed = 0;
 
   //boot the watchdog
+  #if NZHS_PLATFORM_UNO_R3
   wdt_reset();
+  #else
+  r4ResetWatchdog();
+  #endif
   g_ResetDiagnostics.lastSystemState = g_SystemState;
   //read keys
   LoopStartTime = millis(); // capture time when loop starts
@@ -1368,6 +1560,13 @@ void loop()
   {
     if (g_SystemState == STATE_STOPPED)
     {
+      #if NZHS_PLATFORM_UNO_R4
+      if(!r4PlatformReady())
+      {
+        updateSystemState(STATE_PLATFORM_WARNING);
+      }
+      else
+      #endif
       if(g_UserSettings.stoppedScreenSelection == STOPPED_SCREEN_ANALYSE)
       {
         enterAnalysis();
@@ -1464,6 +1663,13 @@ void loop()
   {
     if (!modeKeyPrev) //mode key just pressed?
     {
+      #if NZHS_PLATFORM_UNO_R4
+      if(g_SystemState == STATE_PLATFORM_WARNING)
+      {
+        updateSystemState(STATE_STOPPED);
+      }
+      else
+      #endif
       if (g_SystemState == STATE_OVERCURRENT_WARNING ||
           g_SystemState == STATE_LOW_CURRENT_WARNING ||
           g_SystemState == STATE_TEMPERATURE_SENSOR_WARNING ||
@@ -2414,6 +2620,16 @@ void loop()
       }
     }
     break;
+    #if NZHS_PLATFORM_UNO_R4
+    case STATE_PLATFORM_WARNING:
+    {
+      updateSystemState(g_SystemState);
+      turnAnnealerOff();
+      turnStartStopLedOff();
+      drawFaultScreen(F("R4 HW"), F("INIT ERR"));
+    }
+    break;
+    #endif
     default:
     {
       updateSystemState(g_SystemState);
@@ -2603,6 +2819,14 @@ static bool loadProfile(uint8_t const slot, tCartridgeProfile * const profile)
 *//*-------------------------------------------------------------------------*/
 static void saveProfile(uint8_t const slot, tCartridgeProfile const * const profile)
 {
+  #if NZHS_PLATFORM_UNO_R4
+  tCartridgeProfile savedProfile = *profile;
+  savedProfile.magic = PROFILE_MAGIC;
+  savedProfile.checksum = calculateProfileChecksum(&savedProfile);
+  // Renesas EEPROM is virtual data flash; put() batches this record instead
+  // of committing one flash transaction per changed byte.
+  EEPROM.put(getProfileAddress(slot), savedProfile);
+  #else
   uint8_t index;
   uint16_t address = getProfileAddress(slot);
   tCartridgeProfile savedProfile = *profile;
@@ -2617,6 +2841,7 @@ static void saveProfile(uint8_t const slot, tCartridgeProfile const * const prof
     EEPROM.update(address + index, bytes[index]);
   }
   EEPROM.update(address, PROFILE_MAGIC);
+  #endif
 }
 
 /*---------------------------------------------------------------------------*/
@@ -2645,9 +2870,18 @@ static void saveProfileStopRule(uint8_t const slot, uint16_t const targetEnergy_
                                 uint8_t const peakDropPercent)
 {
   uint16_t const address = EEPROM_ADDRESS_PROFILE_RULE_BASE + ((uint16_t)slot * 3);
+  #if NZHS_PLATFORM_UNO_R4
+  uint8_t const rule[3] = {
+    (uint8_t)(targetEnergy_J & 0xFF),
+    (uint8_t)(targetEnergy_J >> 8),
+    peakDropPercent
+  };
+  EEPROM.put(address, rule);
+  #else
   EEPROM.update(address, targetEnergy_J & 0xFF);
   EEPROM.update(address + 1, targetEnergy_J >> 8);
   EEPROM.update(address + 2, peakDropPercent);
+  #endif
 }
 
 /*---------------------------------------------------------------------------*/
@@ -2720,6 +2954,55 @@ static void activateProfileReference(uint8_t const slot)
 *//*-------------------------------------------------------------------------*/
 static void saveProfileReference(uint8_t const slot)
 {
+  #if NZHS_PLATFORM_UNO_R4
+  if(slot >= PROFILE_COUNT || !g_Analysis.graphValid || !g_Analysis.graphIsAnalysis)
+  {
+    return;
+  }
+  uint8_t record[PROFILE_REFERENCE_RECORD_SIZE] = {};
+  for(uint8_t sample = 0; sample < PROFILE_REFERENCE_SAMPLE_COUNT; sample++)
+  {
+    uint8_t const firstColumn = sample * 2;
+    uint16_t sampleTotal = 0;
+    uint8_t sampleCount = 0;
+    if(firstColumn <= g_Analysis.graphColumn)
+    {
+      sampleTotal = g_Analysis.graphSamples[firstColumn];
+      sampleCount = 1;
+    }
+    if(firstColumn + 1 <= g_Analysis.graphColumn)
+    {
+      sampleTotal += g_Analysis.graphSamples[firstColumn + 1];
+      sampleCount++;
+    }
+    record[PROFILE_REFERENCE_SAMPLE_OFFSET + sample] = sampleCount ?
+      (sampleTotal + (sampleCount / 2)) / sampleCount : 0;
+  }
+  uint16_t const energy_J = (g_Analysis.inputEnergy_mJ + 500UL) / 1000UL;
+  uint16_t const values[] = {
+    g_Analysis.peakCurrent_ma,
+    energy_J,
+    g_Analysis.elapsedTime_ms
+  };
+  uint8_t const offsets[] = {
+    PROFILE_REFERENCE_PEAK_OFFSET,
+    PROFILE_REFERENCE_ENERGY_OFFSET,
+    PROFILE_REFERENCE_DURATION_OFFSET
+  };
+  for(uint8_t value = 0; value < 3; value++)
+  {
+    record[offsets[value]] = values[value] & 0xFF;
+    record[offsets[value] + 1] = values[value] >> 8;
+  }
+  uint8_t checksum = 0;
+  for(uint8_t offset = 1; offset < PROFILE_REFERENCE_CHECKSUM_OFFSET; offset++)
+  {
+    checksum ^= record[offset];
+  }
+  record[0] = PROFILE_REFERENCE_MAGIC;
+  record[PROFILE_REFERENCE_CHECKSUM_OFFSET] = checksum;
+  EEPROM.put(getProfileReferenceAddress(slot), record);
+  #else
   uint8_t checksum = 0;
   uint16_t const address = getProfileReferenceAddress(slot);
   if(slot >= PROFILE_COUNT || !g_Analysis.graphValid || !g_Analysis.graphIsAnalysis)
@@ -2771,6 +3054,7 @@ static void saveProfileReference(uint8_t const slot)
   }
   EEPROM.update(address + PROFILE_REFERENCE_CHECKSUM_OFFSET, checksum);
   EEPROM.update(address, PROFILE_REFERENCE_MAGIC);
+  #endif
 }
 
 /*---------------------------------------------------------------------------*/
@@ -4084,7 +4368,7 @@ static void drawStoppedScreen(bool const fanIsOn, int16_t const temperature, uin
       {
         display.setCursor(RIGHT_PANEL_X, y);
         setTextSelected(row == 3);
-        display.print(FPSTR(pgm_read_word(&STOPPED_MENU_TEXT[item - 4])));
+        display.print(FPSTR(pgm_read_ptr(&STOPPED_MENU_TEXT[item - 4])));
       }
     }
     display.setTextColor(WHITE);
@@ -4179,7 +4463,7 @@ static void drawProfileActionsScreen(void)
     {
       uint8_t const action = visibleRow - 1;
       setTextSelected(action == g_UserSettings.profileActionSelection);
-      display.print(FPSTR(pgm_read_word(&PROFILE_ACTION_TEXT[action])));
+      display.print(FPSTR(pgm_read_ptr(&PROFILE_ACTION_TEXT[action])));
       display.setTextColor(WHITE);
     }
   }
@@ -4610,7 +4894,14 @@ static void turnAnnealerOff(void)
 static void openDropGate(void)
 {
 
+    #if NZHS_PLATFORM_UNO_R3
     analogWrite(g_DropServoPin,SERVO_OPEN_POSITION);
+    #else
+    if(g_R4DropServoReady)
+    {
+      g_R4DropServo.writeMicroseconds(SERVO_OPEN_POSITION * 128U);
+    }
+    #endif
     digitalWrite(g_DropSolenoidPin, HIGH);
 
 }
@@ -4621,7 +4912,14 @@ static void openDropGate(void)
 static void closeDropGate(void)
 {
 
+    #if NZHS_PLATFORM_UNO_R3
     analogWrite(g_DropServoPin,SERVO_CLOSE_POSITION); //IO9 PWM output
+    #else
+    if(g_R4DropServoReady)
+    {
+      g_R4DropServo.writeMicroseconds(SERVO_CLOSE_POSITION * 128U);
+    }
+    #endif
     digitalWrite(g_DropSolenoidPin, LOW);
 
 }
@@ -4698,6 +4996,7 @@ static uint16_t readPsuCurrent_ma(void)
 *//*-------------------------------------------------------------------------*/
 static uint16_t readSupplyVoltage_mv(void)
 {
+  #if NZHS_PLATFORM_UNO_R3
   uint8_t previousAdmux = ADMUX;
 
   // AVcc is the ADC reference; channel 14 is the internal 1.1 V band-gap.
@@ -4719,6 +5018,14 @@ static uint16_t readSupplyVoltage_mv(void)
     return 0;
   }
   return ((uint32_t)INTERNAL_BANDGAP_MV * 1023UL + (adc / 2)) / adc;
+  #else
+  float const supplyVoltage = analogReference();
+  if(!(supplyVoltage > 0.0f) || supplyVoltage > 6.0f)
+  {
+    return 0;
+  }
+  return (uint16_t)(supplyVoltage * 1000.0f + 0.5f);
+  #endif
 }
 
 /*---------------------------------------------------------------------------*/
@@ -4812,7 +5119,11 @@ static void setStepsToGo(uint16_t const steps)
 *//*-------------------------------------------------------------------------*/
 static uint16_t getStepsToGo(void)
 {
+  #if NZHS_PLATFORM_UNO_R4
+  uint16_t steps = 0;
+  #else
   uint16_t steps;
+  #endif
   ATOMIC_BLOCK(ATOMIC_RESTORESTATE)
   {
     steps = StepsToGo;
