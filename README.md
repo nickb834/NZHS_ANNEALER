@@ -325,6 +325,11 @@ app manifest, allowing it to be saved as an iOS/Android Home Screen shortcut.
 It also retains the latest 16 current traces in R4 RAM for browser review and
 per-result CSV download. The history clears on reset and causes no EEPROM wear.
 
+<p align="center">
+  <img src="docs/screenshots/r4-wifi-monitor-iphone.png"
+       alt="R4 WiFi monitor on an iPhone" width="360">
+</p>
+
 The monitor deliberately has no remote START, gate, feeder, profile-write,
 upload, or firmware-update controls. Sending `W` at 115200 baud while stopped
 still starts the non-persistent direct `NZHS-Annealer` monitor AP for bench
