@@ -9,6 +9,9 @@
 #include <SPI.h>
 #include <Wire.h>
 #include "AnnealerPlatform.h"
+#if NZHS_HAS_WIFI
+#include "WebAssets.h"
+#endif
 #include <EEPROM.h>
 #include <OneWire.h>
 #include <DallasTemperature.h>
@@ -2091,7 +2094,7 @@ static void r4UpdateMatrixDebug(int16_t const temperature)
 #if NZHS_HAS_WIFI
 static const char R4_WIFI_MONITOR_HTML[] = R"HTML(<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>NZHS Annealer Monitor</title><style>
+<title>NZHS Annealer Monitor</title><link rel="icon" href="/favicon.ico"><link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png"><link rel="manifest" href="/manifest.webmanifest"><meta name="theme-color" content="#080b10"><meta name="apple-mobile-web-app-capable" content="yes"><meta name="apple-mobile-web-app-status-bar-style" content="black-translucent"><meta name="apple-mobile-web-app-title" content="Annealer"><style>
 :root{color-scheme:dark;font-family:system-ui,sans-serif}body{margin:0;background:#080b10;color:#edf6ff}main{max-width:900px;margin:auto;padding:18px}.head{display:flex;justify-content:space-between;align-items:baseline;gap:12px}h1{font-size:1.35rem;margin:0}.tag{color:#7fc8ff}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(135px,1fr));gap:10px;margin:16px 0}.card{background:#111a24;border:1px solid #24374a;border-radius:8px;padding:10px}.label{color:#8da4b8;font-size:.72rem;text-transform:uppercase}.value{font-size:1.35rem;margin-top:3px}canvas{width:100%;height:auto;background:#05080c;border:1px solid #24374a;border-radius:8px}.foot{color:#8da4b8;font-size:.8rem;margin-top:10px}.bad{color:#ff847c}.ok{color:#8ce99a}
 </style></head><body><main><div class="head"><h1>NZHS Annealer</h1><span class="tag">read-only monitor</span></div>
 <div class="grid"><div class="card"><div class="label">State</div><div class="value" id="state">-</div></div><div class="card"><div class="label">Mode</div><div class="value" id="mode">-</div></div><div class="card"><div class="label">Current</div><div class="value" id="current">-</div></div><div class="card"><div class="label">Temperature</div><div class="value" id="temp">-</div></div><div class="card"><div class="label">Energy</div><div class="value" id="energy">-</div></div><div class="card"><div class="label">Peak</div><div class="value" id="peak">-</div></div><div class="card"><div class="label">Cases</div><div class="value" id="cases">-</div></div><div class="card"><div class="label">Remaining</div><div class="value" id="remaining">-</div></div></div>
@@ -2106,9 +2109,11 @@ status();graph();setInterval(status,500);setInterval(graph,1000);
 
 static const char R4_WIFI_SETUP_HTML_START[] = R"HTML(<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>NZHS Annealer WiFi Setup</title><style>:root{color-scheme:dark;font-family:system-ui,sans-serif}body{margin:0;background:#080b10;color:#edf6ff}main{max-width:420px;margin:auto;padding:24px}label{display:block;margin-top:16px;color:#9fb3c8}input{box-sizing:border-box;width:100%;padding:12px;margin-top:5px;background:#111a24;color:#fff;border:1px solid #38526c;border-radius:6px}button{width:100%;padding:12px;margin-top:22px;background:#1976b9;color:#fff;border:0;border-radius:6px;font-size:1rem}.note{color:#9fb3c8;font-size:.85rem}.msg{color:#8ce99a}</style></head><body><main><h1>NZHS Annealer</h1><h2>WiFi setup</h2>)HTML";
+<title>NZHS Annealer WiFi Setup</title><link rel="icon" href="/favicon.ico"><link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png"><meta name="theme-color" content="#080b10"><style>:root{color-scheme:dark;font-family:system-ui,sans-serif}body{margin:0;background:#080b10;color:#edf6ff}main{max-width:420px;margin:auto;padding:24px}label{display:block;margin-top:16px;color:#9fb3c8}input{box-sizing:border-box;width:100%;padding:12px;margin-top:5px;background:#111a24;color:#fff;border:1px solid #38526c;border-radius:6px}button{width:100%;padding:12px;margin-top:22px;background:#1976b9;color:#fff;border:0;border-radius:6px;font-size:1rem}.note{color:#9fb3c8;font-size:.85rem}.msg{color:#8ce99a}</style></head><body><main><h1>NZHS Annealer</h1><h2>WiFi setup</h2>)HTML";
 
 static const char R4_WIFI_SETUP_HTML_FORM[] = R"HTML(<form method="post" action="/setup/save"><label for="ssid">Network name</label><input id="ssid" name="ssid" maxlength="32" required><label for="password">Password</label><input id="password" name="password" type="password" maxlength="63"><button type="submit">Save and connect</button></form><p class="note">Credentials are stored unencrypted in the R4 EEPROM-backed storage. The monitor remains read-only.</p></main></body></html>)HTML";
+
+static const char R4_WIFI_MANIFEST[] = R"JSON({"name":"NZHS Annealer Monitor","short_name":"Annealer","start_url":"/","display":"standalone","background_color":"#080b10","theme_color":"#080b10","icons":[{"src":"/icon-192.png","sizes":"192x192","type":"image/png","purpose":"any"},{"src":"/icon-512.png","sizes":"512x512","type":"image/png","purpose":"any maskable"}]})JSON";
 
 /*---------------------------------------------------------------------------*/
 /*! @brief      Return a compact human-readable name for web telemetry.
@@ -2193,6 +2198,28 @@ static void r4SendWifiSetupPage(WiFiClient &client, char const * const message)
     client.println(F("</p>"));
   }
   client.print(R4_WIFI_SETUP_HTML_FORM);
+}
+
+/*---------------------------------------------------------------------------*/
+/*! @brief      Serve one embedded icon in watchdog-safe chunks.
+*//*-------------------------------------------------------------------------*/
+static void r4SendWifiAsset(WiFiClient &client, char const * const contentType,
+                            uint8_t const * const data, size_t const length)
+{
+  client.println(F("HTTP/1.1 200 OK"));
+  client.print(F("Content-Type: "));
+  client.println(contentType);
+  client.print(F("Content-Length: "));
+  client.println(length);
+  client.println(F("Cache-Control: public, max-age=86400"));
+  client.println(F("Connection: close"));
+  client.println();
+  for(size_t offset = 0; offset < length; offset += 512)
+  {
+    size_t const remaining = length - offset;
+    client.write(data + offset, remaining > 512 ? 512 : remaining);
+    r4ResetWatchdog();
+  }
 }
 
 /*---------------------------------------------------------------------------*/
@@ -2742,7 +2769,37 @@ static void r4HandleWifiRequest(WiFiClient &client,
   }
   else if(strcmp(method, "GET") == 0 && strcmp(requestTarget, "/favicon.ico") == 0)
   {
-    r4SendWifiHeaders(client, "image/x-icon");
+    r4SendWifiAsset(client, "image/x-icon", R4_FAVICON_ICO,
+                    R4_FAVICON_ICO_LENGTH);
+  }
+  else if(strcmp(method, "GET") == 0 &&
+          (strcmp(requestTarget, "/apple-touch-icon.png") == 0 ||
+           strcmp(requestTarget, "/apple-touch-icon-precomposed.png") == 0))
+  {
+    r4SendWifiAsset(client, "image/png", R4_APPLE_TOUCH_ICON_PNG,
+                    R4_APPLE_TOUCH_ICON_PNG_LENGTH);
+  }
+  else if(strcmp(method, "GET") == 0 && strcmp(requestTarget, "/icon-192.png") == 0)
+  {
+    r4SendWifiAsset(client, "image/png", R4_ICON_192_PNG,
+                    R4_ICON_192_PNG_LENGTH);
+  }
+  else if(strcmp(method, "GET") == 0 && strcmp(requestTarget, "/icon-512.png") == 0)
+  {
+    r4SendWifiAsset(client, "image/png", R4_ICON_512_PNG,
+                    R4_ICON_512_PNG_LENGTH);
+  }
+  else if(strcmp(method, "GET") == 0 &&
+          strcmp(requestTarget, "/manifest.webmanifest") == 0)
+  {
+    client.println(F("HTTP/1.1 200 OK"));
+    client.println(F("Content-Type: application/manifest+json"));
+    client.print(F("Content-Length: "));
+    client.println(strlen(R4_WIFI_MANIFEST));
+    client.println(F("Cache-Control: public, max-age=300"));
+    client.println(F("Connection: close"));
+    client.println();
+    client.print(R4_WIFI_MANIFEST);
   }
   else
   {
@@ -2781,7 +2838,7 @@ static void r4UpdateWifiMonitor(int16_t const temperature,
   }
 
   uint8_t bytesRead = 0;
-  while(g_R4WifiClient.available() && bytesRead < 96)
+  while(g_R4WifiClient.available() && bytesRead < 512)
   {
     char const incoming = g_R4WifiClient.read();
     bytesRead++;
