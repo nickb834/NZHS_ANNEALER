@@ -16,7 +16,8 @@ Use this checklist before unattended use or publishing a firmware release.
 ## Uno R4 platform bring-up
 
 The matrix page legend and bench procedure are documented in
-[R4_MATRIX_DEBUG.md](R4_MATRIX_DEBUG.md).
+[R4_MATRIX_DEBUG.md](R4_MATRIX_DEBUG.md). WiFi monitor operation is documented
+in [R4_WIFI_MONITOR.md](R4_WIFI_MONITOR.md).
 
 - With the annealing/high-current output disconnected, confirm D6 remains LOW
   throughout boot and stopped operation.
@@ -53,6 +54,20 @@ The matrix page legend and bench procedure are documented in
 - Confirm HBT remains readable while its bottom-row dot moves continuously.
 - Reset and confirm the matrix turns off, normal START behaviour returns, and
   no matrix timer remains allocated.
+- Reset, wait for the stopped screen, and send `W` at 115200 baud. Confirm the
+  open `NZHS-Annealer` access point starts and Serial prints its local address.
+- Connect a phone or computer and confirm `/`, `/api/status`, and `/api/curve`
+  load. Confirm there are no browser controls for START, gate, feeder, settings,
+  profiles, upload, or firmware update.
+- Exercise stopped, Analyse, normal anneal, dropping, reloading, cooldown and a
+  fault state. Confirm state, sensor values, case count, remaining time and
+  actual/reference curves update without stale live energy values.
+- Generate browser traffic during Analyse and auto-feed operation. Compare the
+  25 ms Serial sample timestamps, feeder timing and safety trips with WiFi off;
+  confirm no material timing regression.
+- While WiFi is active, send `M` and confirm matrix diagnostics are refused.
+  Reset, enter matrix diagnostics with `M`, send `W`, and confirm WiFi startup
+  is refused. Reset and confirm both optional features are inactive.
 - Only reconnect the high-current output after all safe-state, gate and feeder
   checks pass.
 

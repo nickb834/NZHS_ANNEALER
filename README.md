@@ -230,10 +230,12 @@ before the firmware reads it.
 | SPI, Wire, EEPROM | Included with board package | Included with board package |
 | FspTimer | Not used | Included with R4 board package |
 | Arduino_LED_Matrix | Not available | Included; optional bench debug only |
+| WiFiS3 | Not available | Included; optional read-only monitor |
 
 Adafruit GFX and SSD1306 are not required; the firmware contains its own
-fixed-size OLED renderer. WiFiS3 is also not currently required: this release
-does not yet use the R4 WiFi radio.
+fixed-size OLED renderer. The Uno R4 board package supplies FspTimer,
+Arduino_LED_Matrix and WiFiS3; they do not need separate Library Manager
+installs.
 
 1. Install the current [Arduino IDE](https://www.arduino.cc/en/software).
 2. In **Library Manager**, install OneWire and DallasTemperature. Install Servo
@@ -300,6 +302,20 @@ sensor, temperature and heartbeat pages while printing full values over Serial.
 Resetting exits diagnostics. See
 [Uno R4 WiFi matrix bench diagnostics](docs/R4_MATRIX_DEBUG.md) for the page
 legend, DS18B20 wiring, safety behaviour and troubleshooting.
+
+### Experimental Uno R4 WiFi monitor
+
+The R4 WiFi build also contains an opt-in, read-only browser monitor. While the
+firmware is stopped, send `W` at 115200 baud. Connect to the open
+`NZHS-Annealer` access point and open the IP address printed over Serial
+(normally `http://192.168.4.1`). The page shows operating state, current,
+temperature, energy, peak current, case count, time remaining, and the live or
+retained current/reference curves.
+
+This first implementation deliberately has no remote START, gate, feeder,
+profile-write, upload, or firmware-update controls. It is non-persistent and
+turns off on reset. Matrix diagnostics and the WiFi monitor cannot be active at
+the same time. See the [R4 WiFi monitor guide](docs/R4_WIFI_MONITOR.md).
 
 ## Simulator
 
