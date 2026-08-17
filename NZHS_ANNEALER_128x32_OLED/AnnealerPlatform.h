@@ -6,6 +6,7 @@
 #if defined(__AVR_ATmega328P__)
   #define NZHS_PLATFORM_UNO_R3 1
   #define NZHS_PLATFORM_UNO_R4 0
+  #define NZHS_HAS_LED_MATRIX 0
   #include <avr/io.h>
   #include <avr/wdt.h>
   #include <util/atomic.h>
@@ -15,6 +16,13 @@
   #include <FspTimer.h>
   #include <Servo.h>
   #include "r_wdt.h"
+
+  #if defined(ARDUINO_UNOR4_WIFI)
+    #define NZHS_HAS_LED_MATRIX 1
+    #include <Arduino_LED_Matrix.h>
+  #else
+    #define NZHS_HAS_LED_MATRIX 0
+  #endif
 
   #ifndef BUFFER_LENGTH
     #define BUFFER_LENGTH I2C_BUFFER_LENGTH

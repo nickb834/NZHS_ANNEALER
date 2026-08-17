@@ -954,6 +954,17 @@ static bool g_R4DropServoReady = false;
 static bool g_R4WatchdogReady = false;
 #endif
 
+#if NZHS_HAS_LED_MATRIX
+static ArduinoLEDMatrix g_R4LedMatrix;
+static bool g_R4MatrixDebugActive = false;
+static bool g_R4MatrixReady = false;
+static uint8_t g_R4MatrixPage = 0;
+static uint8_t g_R4MatrixLastPage = UINT8_MAX;
+static uint8_t g_R4MatrixHeartbeat = 0;
+static uint32_t g_R4MatrixPageTime = 0;
+static uint32_t g_R4MatrixHeartbeatTime = 0;
+#endif
+
 #if NZHS_PLATFORM_UNO_R3
   #define FEEDER_TIMER_COMPARE OCR2A
 #else
@@ -1119,6 +1130,14 @@ static void r4FeederTimerCallback(timer_callback_args_t *args);
 static void r4BeginWatchdog(void);
 static void r4ResetWatchdog(void);
 static bool r4PlatformReady(void);
+#endif
+#if NZHS_HAS_LED_MATRIX
+static void r4HandleMatrixDebugSerial(void);
+static void r4BeginMatrixDebug(void);
+static void r4UpdateMatrixDebug(int16_t const temperature);
+static void r4DrawMatrixWord(uint8_t pixels[96], char const * const word);
+static void r4RenderMatrixPage(int16_t const temperature);
+static void r4PrintMatrixDebugStatus(void);
 #endif
 
 /*---------------------------------------------------------------------------*/
@@ -1294,6 +1313,9 @@ void setup()
   if(!g_R4FeederTimerReady) Serial.println(F("R4 INIT ERROR: FEED TIMER"));
   if(!g_R4DropServoReady) Serial.println(F("R4 INIT ERROR: DROP SERVO"));
   if(!g_R4WatchdogReady) Serial.println(F("R4 INIT ERROR: WATCHDOG"));
+  #if NZHS_HAS_LED_MATRIX
+  Serial.println(F("R4 bench debug: send M while stopped to enable the LED matrix."));
+  #endif
   #endif
   digitalWrite(g_FeederStepperEnPin,HIGH); //disable stepper driver
 }
@@ -1470,6 +1492,393 @@ static bool r4PlatformReady(void)
 }
 #endif
 
+#if NZHS_HAS_LED_MATRIX
+static const uint8_t MATRIX_FONT_3X5[26][5] PROGMEM = {
+  {0b010, 0b101, 0b111, 0b101, 0b101}, // A
+  {0b110, 0b101, 0b110, 0b101, 0b110}, // B
+  {0b011, 0b100, 0b100, 0b100, 0b011}, // C
+  {0b110, 0b101, 0b101, 0b101, 0b110}, // D
+  {0b111, 0b100, 0b110, 0b100, 0b111}, // E
+  {0b111, 0b100, 0b110, 0b100, 0b100}, // F
+  {0b011, 0b100, 0b101, 0b101, 0b011}, // G
+  {0b101, 0b101, 0b111, 0b101, 0b101}, // H
+  {0b111, 0b010, 0b010, 0b010, 0b111}, // I
+  {0b001, 0b001, 0b001, 0b101, 0b010}, // J
+  {0b101, 0b101, 0b110, 0b101, 0b101}, // K
+  {0b100, 0b100, 0b100, 0b100, 0b111}, // L
+  {0b101, 0b111, 0b111, 0b101, 0b101}, // M
+  {0b101, 0b111, 0b111, 0b111, 0b101}, // N
+  {0b010, 0b101, 0b101, 0b101, 0b010}, // O
+  {0b110, 0b101, 0b110, 0b100, 0b100}, // P
+  {0b010, 0b101, 0b101, 0b111, 0b011}, // Q
+  {0b110, 0b101, 0b110, 0b101, 0b101}, // R
+  {0b011, 0b100, 0b010, 0b001, 0b110}, // S
+  {0b111, 0b010, 0b010, 0b010, 0b010}, // T
+  {0b101, 0b101, 0b101, 0b101, 0b111}, // U
+  {0b101, 0b101, 0b101, 0b101, 0b010}, // V
+  {0b101, 0b101, 0b111, 0b111, 0b101}, // W
+  {0b101, 0b101, 0b010, 0b101, 0b101}, // X
+  {0b101, 0b101, 0b010, 0b010, 0b010}, // Y
+  {0b111, 0b001, 0b010, 0b100, 0b111}  // Z
+};
+
+static const uint8_t MATRIX_DIGITS_3X5[10][5] PROGMEM = {
+  {0b111, 0b101, 0b101, 0b101, 0b111}, // 0
+  {0b010, 0b110, 0b010, 0b010, 0b111}, // 1
+  {0b110, 0b001, 0b010, 0b100, 0b111}, // 2
+  {0b110, 0b001, 0b010, 0b001, 0b110}, // 3
+  {0b101, 0b101, 0b111, 0b001, 0b001}, // 4
+  {0b111, 0b100, 0b110, 0b001, 0b110}, // 5
+  {0b011, 0b100, 0b110, 0b101, 0b010}, // 6
+  {0b111, 0b001, 0b010, 0b010, 0b010}, // 7
+  {0b111, 0b101, 0b111, 0b101, 0b111}, // 8
+  {0b010, 0b101, 0b011, 0b001, 0b110}  // 9
+};
+
+static const uint8_t MATRIX_MINUS_3X5[5] PROGMEM = {
+  0b000, 0b000, 0b111, 0b000, 0b000
+};
+
+/*---------------------------------------------------------------------------*/
+/*! @brief      Draw a readable three-character 3x5 word into a 12x8 frame.
+*//*-------------------------------------------------------------------------*/
+static void r4DrawMatrixWord(uint8_t pixels[96], char const * const word)
+{
+  for(uint8_t character = 0; character < 3 && word[character]; character++)
+  {
+    char const letter = word[character];
+    for(uint8_t row = 0; row < 5; row++)
+    {
+      uint8_t bits = 0;
+      if(letter >= 'A' && letter <= 'Z')
+      {
+        bits = pgm_read_byte(&MATRIX_FONT_3X5[letter - 'A'][row]);
+      }
+      else if(letter >= '0' && letter <= '9')
+      {
+        bits = pgm_read_byte(&MATRIX_DIGITS_3X5[letter - '0'][row]);
+      }
+      else if(letter == '-')
+      {
+        bits = pgm_read_byte(&MATRIX_MINUS_3X5[row]);
+      }
+      for(uint8_t column = 0; column < 3; column++)
+      {
+        if(bits & (1 << (2 - column)))
+        {
+          pixels[((row + 1) * 12) + (character * 4) + column] = 1;
+        }
+      }
+    }
+  }
+}
+
+/*---------------------------------------------------------------------------*/
+/*! @brief      Print the detailed legend backing the matrix status pages.
+*//*-------------------------------------------------------------------------*/
+static void r4PrintMatrixDebugStatus(void)
+{
+  Serial.println(F("MATRIX DEBUG ACTIVE - RESET TO EXIT"));
+  Serial.println(F("START IS BLOCKED; ANNEALER OUTPUT FORCED OFF"));
+  Serial.println(F("Pages: RDY/ERR, reset cause, OUT, SNS, TMP/value, HBT"));
+  Serial.println(F("Send N or M for the next page."));
+}
+
+/*---------------------------------------------------------------------------*/
+/*! @brief      Render the selected bench-diagnostic page on the matrix.
+*//*-------------------------------------------------------------------------*/
+static void r4RenderMatrixPage(int16_t const temperature)
+{
+  uint8_t pixels[96] = {};
+  bool const pageChanged = g_R4MatrixLastPage != g_R4MatrixPage;
+  if(g_R4MatrixPage == 0)
+  {
+    bool const ready = r4PlatformReady() &&
+                       EEPROM.length() >= ARDUINO_UNO_EEPROM_SIZE;
+    if(ready || (g_R4MatrixHeartbeat & 1))
+    {
+      r4DrawMatrixWord(pixels, ready ? "RDY" : "ERR");
+    }
+    pixels[(7 * 12) + 1] = g_R4FeederTimerReady;
+    pixels[(7 * 12) + 4] = g_R4DropServoReady;
+    pixels[(7 * 12) + 7] = g_R4WatchdogReady;
+    pixels[(7 * 12) + 10] = EEPROM.length() >= ARDUINO_UNO_EEPROM_SIZE;
+    if(pageChanged)
+    {
+      Serial.print(F("PAGE "));
+      Serial.print(ready ? F("RDY") : F("ERR"));
+      Serial.print(F(": feeder="));
+      Serial.print(g_R4FeederTimerReady ? F("Y") : F("N"));
+      Serial.print(F(" servo="));
+      Serial.print(g_R4DropServoReady ? F("Y") : F("N"));
+      Serial.print(F(" watchdog="));
+      Serial.print(g_R4WatchdogReady ? F("Y") : F("N"));
+      Serial.print(F(" eeprom="));
+      Serial.println(EEPROM.length() >= ARDUINO_UNO_EEPROM_SIZE ? F("Y") : F("N"));
+    }
+  }
+  else if(g_R4MatrixPage == 1)
+  {
+    char const * resetWord = "UNK";
+    char const * resetName = "unknown";
+    if(g_ResetDiagnostics.resetFlags & _BV(WDRF))
+    {
+      resetWord = "WDT";
+      resetName = "watchdog";
+    }
+    else if(g_ResetDiagnostics.resetFlags & _BV(BORF))
+    {
+      resetWord = "BRN";
+      resetName = "brown-out";
+    }
+    else if(g_ResetDiagnostics.resetFlags & _BV(EXTRF))
+    {
+      resetWord = "EXT";
+      resetName = "external/other";
+    }
+    else if(g_ResetDiagnostics.resetFlags & _BV(PORF))
+    {
+      resetWord = "PWR";
+      resetName = "power-on";
+    }
+    r4DrawMatrixWord(pixels, resetWord);
+    if(pageChanged)
+    {
+      Serial.print(F("PAGE "));
+      Serial.print(resetWord);
+      Serial.print(F(": reset="));
+      Serial.println(resetName);
+    }
+  }
+  else if(g_R4MatrixPage == 2)
+  {
+    r4DrawMatrixWord(pixels, "OUT");
+    pixels[(7 * 12) + 0] = digitalRead(g_AnnealerPin);
+    pixels[(7 * 12) + 2] = digitalRead(g_CoolingFanPin);
+    pixels[(7 * 12) + 4] = digitalRead(g_DropSolenoidPin);
+    pixels[(7 * 12) + 6] = !digitalRead(g_FeederStepperEnPin);
+    pixels[(7 * 12) + 8] = digitalRead(g_FeederDirPin);
+    pixels[(7 * 12) + 10] = StepsToGo != 0;
+    if(pageChanged)
+    {
+      Serial.print(F("PAGE OUT: annealer="));
+      Serial.print(digitalRead(g_AnnealerPin));
+      Serial.print(F(" fan="));
+      Serial.print(digitalRead(g_CoolingFanPin));
+      Serial.print(F(" gate="));
+      Serial.print(digitalRead(g_DropSolenoidPin));
+      Serial.print(F(" feeder_enabled="));
+      Serial.print(!digitalRead(g_FeederStepperEnPin));
+      Serial.print(F(" direction="));
+      Serial.print(digitalRead(g_FeederDirPin));
+      Serial.print(F(" stepping="));
+      Serial.println(StepsToGo != 0);
+    }
+  }
+  else if(g_R4MatrixPage == 3)
+  {
+    r4DrawMatrixWord(pixels, "SNS");
+    pixels[(7 * 12) + 1] = NumberDallasTempDevices != 0;
+    pixels[(7 * 12) + 4] = isTemperatureReadingValid(temperature);
+    pixels[(7 * 12) + 7] = CurrentSensorPresent;
+    pixels[(7 * 12) + 10] = g_CasePerformance.referenceValid;
+    if(pageChanged)
+    {
+      Serial.print(F("PAGE SNS: temp_device="));
+      Serial.print(NumberDallasTempDevices ? F("Y") : F("N"));
+      Serial.print(F(" temp_valid="));
+      Serial.print(isTemperatureReadingValid(temperature) ? F("Y") : F("N"));
+      Serial.print(F(" current="));
+      Serial.print(CurrentSensorPresent ? F("Y") : F("N"));
+      Serial.print(F(" reference="));
+      Serial.println(g_CasePerformance.referenceValid ? F("Y") : F("N"));
+    }
+  }
+  else if(g_R4MatrixPage == 4)
+  {
+    char temperatureWord[4] = "ERR";
+    bool const validTemperature = isTemperatureReadingValid(temperature);
+    if(validTemperature)
+    {
+      int16_t roundedTemperature =
+        ((int32_t)temperature + (temperature < 0 ? -(TEMP_RAW_SCALE / 2) :
+                                                   (TEMP_RAW_SCALE / 2))) /
+        TEMP_RAW_SCALE;
+      if(roundedTemperature >= 100)
+      {
+        temperatureWord[0] = '0' + ((roundedTemperature / 100) % 10);
+        temperatureWord[1] = '0' + ((roundedTemperature / 10) % 10);
+        temperatureWord[2] = '0' + (roundedTemperature % 10);
+      }
+      else if(roundedTemperature >= 10)
+      {
+        temperatureWord[0] = '0' + (roundedTemperature / 10);
+        temperatureWord[1] = '0' + (roundedTemperature % 10);
+        temperatureWord[2] = 'C';
+      }
+      else if(roundedTemperature >= 0)
+      {
+        temperatureWord[0] = ' ';
+        temperatureWord[1] = '0' + roundedTemperature;
+        temperatureWord[2] = 'C';
+      }
+      else
+      {
+        uint8_t const magnitude = -roundedTemperature;
+        temperatureWord[0] = '-';
+        if(magnitude < 10)
+        {
+          temperatureWord[1] = '0' + magnitude;
+          temperatureWord[2] = 'C';
+        }
+        else
+        {
+          temperatureWord[1] = '0' + ((magnitude / 10) % 10);
+          temperatureWord[2] = '0' + (magnitude % 10);
+        }
+      }
+    }
+    r4DrawMatrixWord(pixels,
+      (g_R4MatrixHeartbeat & 1) ? temperatureWord : "TMP");
+    if(pageChanged)
+    {
+      Serial.print(F("PAGE TMP: temperature="));
+      if(validTemperature)
+      {
+        int16_t const tenths = ((int32_t)temperature * 10 +
+          (temperature < 0 ? -(TEMP_RAW_SCALE / 2) : (TEMP_RAW_SCALE / 2))) /
+          TEMP_RAW_SCALE;
+        if(tenths < 0 && tenths > -10) Serial.write('-');
+        Serial.print(tenths / 10);
+        Serial.write('.');
+        Serial.print(tenths < 0 ? (uint8_t)(-tenths % 10) :
+                                  (uint8_t)(tenths % 10));
+        Serial.println(F("C"));
+      }
+      else
+      {
+        Serial.println(F("ERR"));
+      }
+    }
+  }
+  else
+  {
+    r4DrawMatrixWord(pixels, "HBT");
+    pixels[(7 * 12) + (g_R4MatrixHeartbeat % 12)] = 1;
+    if(pageChanged)
+    {
+      Serial.println(F("PAGE HBT: main-loop heartbeat"));
+    }
+  }
+  g_R4LedMatrix.loadPixels(pixels, sizeof(pixels));
+  g_R4MatrixLastPage = g_R4MatrixPage;
+}
+
+/*---------------------------------------------------------------------------*/
+/*! @brief      Start non-persistent matrix diagnostics while safely stopped.
+*//*-------------------------------------------------------------------------*/
+static void r4BeginMatrixDebug(void)
+{
+  turnAnnealerOff();
+  turnStartStopLedOff();
+  closeDropGate();
+  digitalWrite(g_FeederStepperEnPin, HIGH);
+  r4ResetWatchdog();
+  g_R4MatrixDebugActive = true;
+  g_R4MatrixReady = g_R4LedMatrix.begin() != 0;
+  g_R4MatrixPage = 0;
+  g_R4MatrixLastPage = UINT8_MAX;
+  g_R4MatrixPageTime = millis();
+  g_R4MatrixHeartbeatTime = g_R4MatrixPageTime;
+  r4ResetWatchdog();
+  if(!g_R4MatrixReady)
+  {
+    Serial.println(F("MATRIX DEBUG ERROR: TIMER/INITIALISATION FAILED"));
+    Serial.println(F("RESET REQUIRED BEFORE A RUN"));
+    return;
+  }
+  r4PrintMatrixDebugStatus();
+}
+
+/*---------------------------------------------------------------------------*/
+/*! @brief      Accept M to enter diagnostics and M/N to advance pages.
+*//*-------------------------------------------------------------------------*/
+static void r4HandleMatrixDebugSerial(void)
+{
+  while(Serial.available())
+  {
+    char const command = Serial.read();
+    if(command != 'M' && command != 'm' && command != 'N' && command != 'n')
+    {
+      continue;
+    }
+    if(!g_R4MatrixDebugActive)
+    {
+      if(g_SystemState == STATE_STOPPED)
+      {
+        r4BeginMatrixDebug();
+      }
+      else
+      {
+        Serial.println(F("MATRIX DEBUG REFUSED: STOP THE ANNEALER FIRST"));
+      }
+      continue;
+    }
+    if(g_R4MatrixReady)
+    {
+      g_R4MatrixPage = (g_R4MatrixPage + 1) % 6;
+      g_R4MatrixLastPage = UINT8_MAX;
+      g_R4MatrixPageTime = millis();
+      g_R4MatrixHeartbeatTime = g_R4MatrixPageTime;
+      g_R4MatrixHeartbeat = 0;
+    }
+  }
+}
+
+/*---------------------------------------------------------------------------*/
+/*! @brief      Keep the diagnostic display alive and all heating disabled.
+*//*-------------------------------------------------------------------------*/
+static void r4UpdateMatrixDebug(int16_t const temperature)
+{
+  if(!g_R4MatrixDebugActive)
+  {
+    return;
+  }
+  turnAnnealerOff();
+  turnStartStopLedOff();
+  digitalWrite(g_FeederStepperEnPin, HIGH);
+  if(!g_R4MatrixReady)
+  {
+    return;
+  }
+  uint32_t const currentTime = millis();
+  if(hasTimeElapsed(g_R4MatrixPageTime + 4000UL, currentTime))
+  {
+    g_R4MatrixPage = (g_R4MatrixPage + 1) % 6;
+    g_R4MatrixLastPage = UINT8_MAX;
+    g_R4MatrixPageTime = currentTime;
+    g_R4MatrixHeartbeatTime = currentTime;
+    g_R4MatrixHeartbeat = 0;
+  }
+  bool const animatePage = g_R4MatrixPage == 4 || g_R4MatrixPage == 5 ||
+    (g_R4MatrixPage == 0 &&
+     (!r4PlatformReady() || EEPROM.length() < ARDUINO_UNO_EEPROM_SIZE));
+  uint16_t const animationPeriod_ms = g_R4MatrixPage == 5 ? 250 :
+                                      g_R4MatrixPage == 4 ? 2000 : 500;
+  if(animatePage &&
+     hasTimeElapsed(g_R4MatrixHeartbeatTime + animationPeriod_ms, currentTime))
+  {
+    g_R4MatrixHeartbeat++;
+    g_R4MatrixHeartbeatTime = currentTime;
+    r4RenderMatrixPage(temperature);
+  }
+  else if(g_R4MatrixLastPage != g_R4MatrixPage)
+  {
+    r4RenderMatrixPage(temperature);
+  }
+}
+#endif
+
 /*---------------------------------------------------------------------------*/
 /*! @brief      Main Loop.
   @details      None.
@@ -1519,6 +1928,9 @@ void loop()
   start = readStartButton();
   modeKey = readModeButton();
   upKey = readUpButton();
+  #if NZHS_HAS_LED_MATRIX
+  r4HandleMatrixDebugSerial();
+  #endif
 
   // DS18B20 conversion takes longer than the 25 ms analysis sampler.
   if(g_SystemState != STATE_ANALYSING &&
@@ -1560,6 +1972,15 @@ void loop()
   {
     if (g_SystemState == STATE_STOPPED)
     {
+      #if NZHS_HAS_LED_MATRIX
+      if(g_R4MatrixDebugActive)
+      {
+        turnAnnealerOff();
+        turnStartStopLedOff();
+        Serial.println(F("START BLOCKED: RESET TO EXIT MATRIX DEBUG"));
+      }
+      else
+      #endif
       #if NZHS_PLATFORM_UNO_R4
       if(!r4PlatformReady())
       {
@@ -2656,6 +3077,10 @@ void loop()
     turnCoolingFanOff();
     FanIsOn=false;
   }
+
+  #if NZHS_HAS_LED_MATRIX
+  r4UpdateMatrixDebug(temperature);
+  #endif
 
   #ifdef DEBUG
 
