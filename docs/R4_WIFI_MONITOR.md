@@ -98,6 +98,29 @@ The browser page polls the firmware without reloading and displays:
 The API uses compact 0-250 graph samples, corresponding to 0-12.5 A in 50 mA
 steps. The browser expands them to the labelled current scale.
 
+## Session history and CSV
+
+The R4 retains the latest 16 completed current traces in RAM, newest first.
+Each row shows its sequence number, stop reason, elapsed time, peak current,
+input-energy estimate and profile match when available. Select the sequence
+number to replace the live graph with that retained trace; select **LIVE** to
+resume the current graph. Each row also provides a CSV download containing its
+summary and 0-8 second current samples.
+
+Records include:
+
+- completed and user-aborted Analyse runs;
+- Analyse or normal-run overcurrent stops when a graph exists;
+- normal profile-reference comparisons, even if WiFi is temporarily off;
+- ordinary TIME, ENERGY and PEAK DROP runs when WiFi monitoring (persistent or
+  direct AP) is enabled and a current sensor is present;
+- low-current and target-timeout results when a graph was being captured.
+
+History is deliberately session-only: it clears on reset and does not write to
+EEPROM. Ordinary timed runs use the existing 25 ms sampler while history is
+enabled, allowing energy and curve data to be retained without changing the
+anneal output deadline.
+
 ## HTTP endpoints
 
 | Endpoint | Content |
@@ -107,6 +130,9 @@ steps. The browser expands them to the labelled current scale.
 | `POST /setup/save` | Save credentials and schedule a LAN connection |
 | `/api/status` | Current state, network state and aggregate values as JSON |
 | `/api/curve` | Actual and reference graph samples as JSON |
+| `/api/history` | Up to 16 retained result summaries as JSON |
+| `/api/history/<id>` | One retained actual/reference graph as JSON |
+| `/history/<id>.csv` | Download one retained trace and summary as CSV |
 
 The browser polls status every 500 ms and curves every second. Requests use a
 fixed 1536-byte buffer and bounded per-loop reads; the firmware does not use a
@@ -149,6 +175,7 @@ reservation for the R4 if the shortcut must survive router address changes.
 - There is no hostname discovery, HTTPS, authentication or user management.
 - There is no browser facility to clear credentials; use the physical OLED
   reset confirmation or stopped-state Serial `X` command.
+- Session history is RAM-only and clears whenever the R4 resets.
 - SimulIDE cannot emulate the Uno R4 WiFi radio; use a physical R4 WiFi.
 - The current profile number reflects the firmware's selected profile slot; a
   future revision may track a separately named loaded-profile identity.

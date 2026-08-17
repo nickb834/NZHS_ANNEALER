@@ -322,6 +322,8 @@ unencrypted in the R4 EEPROM-backed storage.
 
 The dashboard serves an MGNZ-derived favicon, 180 px Apple touch icon and web
 app manifest, allowing it to be saved as an iOS/Android Home Screen shortcut.
+It also retains the latest 16 current traces in R4 RAM for browser review and
+per-result CSV download. The history clears on reset and causes no EEPROM wear.
 
 The monitor deliberately has no remote START, gate, feeder, profile-write,
 upload, or firmware-update controls. Sending `W` at 115200 baud while stopped
@@ -364,6 +366,7 @@ SW version 4.2.0 (Uno R4 WiFi)
 - Added WiFi connection state and IP address to Info while preserving the
   read-only browser safety boundary.
 - Added MGNZ-derived browser and Home Screen shortcut icons.
+- Added a 16-result RAM session history with graph review and CSV export.
 
 SW version 4.1.0
 

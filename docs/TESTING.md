@@ -91,12 +91,26 @@ in [R4_WIFI_MONITOR.md](R4_WIFI_MONITOR.md).
   `/icon-512.png`, and `/manifest.webmanifest` load with the expected content
   types. Add the dashboard to an iOS Home Screen and confirm the MGNZ-derived
   icon and standalone dark presentation are used.
+- With history empty, confirm the dashboard and `/api/history` report no
+  records. Complete Analyse, user-aborted Analyse, profiled and ordinary timed
+  runs and confirm newest-first rows, stop reasons, elapsed time, peak, energy
+  and optional match values.
+- Select retained rows and LIVE repeatedly; confirm the graph changes without
+  affecting the physical state machine. Download each CSV and verify its
+  summary, sample times and current values against the corresponding graph and
+  Analyse Serial output.
+- Create more than 16 results and confirm the oldest record is replaced without
+  heap growth or EEPROM writes. Reset and confirm history is empty.
 - Exercise stopped, Analyse, normal anneal, dropping, reloading, cooldown and a
   fault state. Confirm state, sensor values, case count, remaining time and
   actual/reference curves update without stale live energy values.
 - Generate browser traffic during Analyse and auto-feed operation. Compare the
   25 ms Serial sample timestamps, feeder timing and safety trips with WiFi off;
   confirm no material timing regression.
+- With the shield fitted, repeat D6 safe boot, D9 gate, D5/D12/D13 feeder, A0
+  current, D8 temperature, OLED/button and current/temperature fault checks
+  while the dashboard and history polling are active. Confirm enclosure/shield
+  placement still provides usable WiFi reception.
 - While any WiFi mode is active or connecting, send `M` and confirm matrix
   diagnostics are refused.
   Reset, enter matrix diagnostics with `M`, send `W`, and confirm WiFi startup
