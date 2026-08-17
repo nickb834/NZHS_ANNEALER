@@ -52,6 +52,11 @@ Send `X` while stopped to perform the same guarded reset operation without the
 OLED/buttons. It erases the saved SSID/password, disables monitoring and prints
 the resulting OFF status. Send `S` afterwards to configure a different network.
 
+Send `O` while stopped to stop the WiFi runtime without changing the saved
+credentials or persistent MONITOR setting. This is useful when comparing bench
+timing with and without network activity; it is not required for matrix mode.
+Resetting reconnects the saved network.
+
 ## Connection and fallback behaviour
 
 - LAN connection runs asynchronously; the firmware does not wait in a blocking
@@ -78,9 +83,9 @@ This starts the original open `NZHS-Annealer` read-only access point without
 changing the persistent monitor setting or credentials. Its default address is
 normally `http://192.168.4.1`; reset exits this bench-only mode.
 
-Matrix diagnostics and all WiFi modes are mutually exclusive. Reset after the
-direct AP, or turn the persistent monitor off, before entering matrix
-diagnostics.
+Matrix diagnostics may run alongside the direct AP or persistent LAN monitor.
+The matrix remains a run-blocking bench mode: D6 is forced LOW, the feeder is
+disabled and START remains blocked even though the dashboard is reachable.
 
 ## Displayed data
 

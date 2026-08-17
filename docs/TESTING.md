@@ -65,6 +65,9 @@ in [R4_WIFI_MONITOR.md](R4_WIFI_MONITOR.md).
   configuration without requiring a special firmware build.
 - Send `I` before, during and after connection. Confirm it reports OFF,
   CONNECTING or LAN as applicable and never presents `0.0.0.0` as a usable IP.
+- Send `O` while stopped and confirm WiFi stops while saved credentials remain;
+  confirm matrix diagnostics work both before and after this command and reset
+  reconnects the saved network.
 - On the OLED, select WIFI `RESET >`; confirm the reset screen defaults to
   `BACK >`, BACK preserves credentials, and `CONFIRM >` clears credentials,
   disables monitoring and stops WiFi. Repeat on a bare board with stopped-state
@@ -111,10 +114,11 @@ in [R4_WIFI_MONITOR.md](R4_WIFI_MONITOR.md).
   current, D8 temperature, OLED/button and current/temperature fault checks
   while the dashboard and history polling are active. Confirm enclosure/shield
   placement still provides usable WiFi reception.
-- While any WiFi mode is active or connecting, send `M` and confirm matrix
-  diagnostics are refused.
-  Reset, enter matrix diagnostics with `M`, send `W`, and confirm WiFi startup
-  is refused. Reset and confirm both optional features are inactive.
+- With LAN monitoring active, send `M` and confirm matrix pages and the browser
+  remain responsive together while D6 stays LOW, the feeder stays disabled and
+  START remains blocked. Repeat by entering matrix mode first and starting the
+  direct monitor with `W`. Reset and confirm matrix mode exits and persistent
+  LAN monitoring reconnects.
 - Only reconnect the high-current output after all safe-state, gate and feeder
   checks pass.
 

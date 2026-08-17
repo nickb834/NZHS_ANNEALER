@@ -336,8 +336,8 @@ still starts the non-persistent direct `NZHS-Annealer` monitor AP for bench
 work; sending `S` starts the persistent setup AP on a bare R4 without the
 OLED/buttons, and `I` prints the current WiFi state/IP over USB. The OLED
 `RESET >` confirmation or Serial `X` erases saved credentials and
-disables monitoring. Matrix diagnostics and all WiFi modes are mutually
-exclusive. See the
+disables monitoring. Matrix diagnostics may run alongside the read-only WiFi
+monitor, but continue to force the annealer off and block START. See the
 [R4 WiFi monitor guide](docs/R4_WIFI_MONITOR.md).
 
 ## Simulator

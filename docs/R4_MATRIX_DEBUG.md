@@ -25,6 +25,11 @@ When diagnostics start, the firmware:
 Reset the board to exit. If matrix timer allocation fails, heating remains
 blocked until reset.
 
+The read-only WiFi monitor may remain active during matrix diagnostics. This
+does not relax the run block: D6 remains LOW, the feeder remains disabled and
+START remains blocked. The combination is intended for bare-board diagnosis;
+the matrix is hidden when the annealer shield is installed.
+
 ## Starting and navigating
 
 1. Connect the Uno R4 WiFi over USB and open Serial Monitor at 115200 baud.
@@ -33,6 +38,10 @@ blocked until reset.
 4. Pages advance automatically every four seconds.
 5. Send `M` or `N` to advance immediately.
 6. Press RESET to exit and restore normal operation.
+
+If persistent WiFi is already connected, it stays connected and the dashboard
+continues reporting the run-blocking diagnostic state. WiFi setup, status and
+clear commands also remain available because no annealing can begin.
 
 Every page change prints its identifier and full decoded values over Serial.
 
@@ -145,4 +154,3 @@ PAGE HBT: main-loop heartbeat
   data pull-up and D8 wiring.
 - START remains blocked: this is intentional after matrix initialisation; reset
   the board to return to production operation.
-
