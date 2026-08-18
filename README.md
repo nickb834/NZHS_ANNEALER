@@ -334,7 +334,8 @@ The monitor deliberately has no remote START, gate, feeder, profile-write,
 upload, or firmware-update controls. Sending `W` at 115200 baud while stopped
 still starts the non-persistent direct `NZHS-Annealer` monitor AP for bench
 work; sending `S` starts the persistent setup AP on a bare R4 without the
-OLED/buttons, and `I` prints the current WiFi state/IP over USB. The OLED
+OLED/buttons, `I` prints the current WiFi state/IP, and `B` toggles raw button
+transition reporting over USB. The OLED
 `RESET >` confirmation or Serial `X` erases saved credentials and
 disables monitoring. Matrix diagnostics may run alongside the read-only WiFi
 monitor, but continue to force the annealer off and block START. See the

@@ -52,6 +52,13 @@ in [R4_WIFI_MONITOR.md](R4_WIFI_MONITOR.md).
   (for example `50C`) and Serial reports the one-decimal reading. Disconnect or
   invalidate the sensor and confirm the value becomes `ERR`.
 - Confirm HBT remains readable while its bottom-row dot moves continuously.
+- During matrix mode, momentarily ground D2, D3 and A2 separately. Confirm the
+  raw `BUTTONS START/MODE/UP` transition lines identify only the expected input;
+  confirm the top, middle and bottom right-edge LED pairs respectively track
+  the held inputs. Confirm START also prints its blocked-run message, HBT never
+  enters column 11 and D6 remains LOW. Press MODE/UP repeatedly, then START;
+  confirm the stopped selection cannot move, Analyse cannot start, and no
+  normal button action occurs until reset exits matrix mode.
 - Reset and confirm the matrix turns off, normal START behaviour returns, and
   no matrix timer remains allocated.
 - On the R4 WiFi, confirm Settings scrolls through RESTART, DUMP, WIFI and BACK;
@@ -65,6 +72,10 @@ in [R4_WIFI_MONITOR.md](R4_WIFI_MONITOR.md).
   configuration without requiring a special firmware build.
 - Send `I` before, during and after connection. Confirm it reports OFF,
   CONNECTING or LAN as applicable and never presents `0.0.0.0` as a usable IP.
+- Without matrix mode, send `B` and confirm raw START/MODE/UP transitions print
+  while their normal actions still occur. Send `B` again and confirm optional
+  reporting stops. Enter matrix mode and confirm reporting resumes regardless
+  of the optional trace setting while START remains blocked.
 - Send `O` while stopped and confirm WiFi stops while saved credentials remain;
   confirm matrix diagnostics work both before and after this command and reset
   reconnects the saved network.

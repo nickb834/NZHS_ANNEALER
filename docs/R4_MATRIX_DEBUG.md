@@ -44,6 +44,43 @@ continues reporting the run-blocking diagnostic state. WiFi setup, status and
 clear commands also remain available because no annealing can begin.
 
 Every page change prints its identifier and full decoded values over Serial.
+Matrix mode also reports every raw button transition independently of normal
+menu handling, for example:
+
+```text
+BUTTONS START=ON MODE=OFF UP=OFF
+BUTTONS START=OFF MODE=OFF UP=OFF
+```
+
+This makes a momentary D2-to-GND START test visible even though START remains
+blocked from energising the annealer.
+
+The same raw format can be enabled outside matrix mode with Serial `B`, but
+matrix diagnostics report it unconditionally even if the optional trace is off.
+
+The unused far-right matrix column also gives immediate visual feedback. Each
+active input illuminates a vertical pair, with one blank row between pairs:
+
+```text
+rightmost column
+START  row 0  *
+       row 1  *
+       row 2  .
+MODE   row 3  *
+       row 4  *
+       row 5  .
+UP     row 6  *
+       row 7  *
+```
+
+The pairs remain lit while the input is held. A momentary press therefore
+appears as a short flash. The HBT dot is limited to columns 0-10 so it cannot
+collide with the UP pair.
+
+Matrix diagnostics consume all three physical button inputs for observation
+only. START, MODE and UP cannot navigate the normal UI or enter Analyse while
+matrix mode is active. START still prints its explicit blocked message on each
+new press.
 
 ## Page legend
 

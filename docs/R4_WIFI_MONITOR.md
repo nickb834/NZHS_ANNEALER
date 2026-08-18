@@ -57,6 +57,12 @@ credentials or persistent MONITOR setting. This is useful when comparing bench
 timing with and without network activity; it is not required for matrix mode.
 Resetting reconnects the saved network.
 
+Send `B` to toggle raw START/MODE/UP transition reporting during normal
+operation. Sending `B` again turns the optional trace off. This reporting does
+not block or alter normal button actions; use matrix mode when START must remain
+safely blocked. Matrix diagnostics always report button transitions regardless
+of the optional `B` setting.
+
 ## Connection and fallback behaviour
 
 - LAN connection runs asynchronously; the firmware does not wait in a blocking
