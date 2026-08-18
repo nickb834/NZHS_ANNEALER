@@ -1069,6 +1069,9 @@ static bool g_R4MatrixReady = false;
 static uint8_t g_R4MatrixPage = 0;
 static uint8_t g_R4MatrixLastPage = UINT8_MAX;
 static uint8_t g_R4MatrixHeartbeat = 0;
+static uint8_t g_R4MatrixLastButtonMask = UINT8_MAX;
+static bool g_R4ButtonTraceActive = false;
+static bool g_R4MatrixButtonChanged = false;
 static uint32_t g_R4MatrixPageTime = 0;
 static uint32_t g_R4MatrixHeartbeatTime = 0;
 #endif
@@ -1269,6 +1272,7 @@ static bool r4PlatformReady(void);
 #endif
 #if NZHS_HAS_LED_MATRIX
 static void r4HandleBenchSerial(void);
+static void r4UpdateButtonTrace(void);
 static void r4BeginMatrixDebug(void);
 static void r4UpdateMatrixDebug(int16_t const temperature);
 static void r4DrawMatrixWord(uint8_t pixels[96], char const * const word);
@@ -1492,7 +1496,7 @@ void setup()
   if(!g_R4DropServoReady) Serial.println(F("R4 INIT ERROR: DROP SERVO"));
   if(!g_R4WatchdogReady) Serial.println(F("R4 INIT ERROR: WATCHDOG"));
   #if NZHS_HAS_LED_MATRIX
-  Serial.println(F("R4 bench: M=matrix, W=direct, S=setup, I=status, O=WiFi off, X=clear."));
+  Serial.println(F("R4 bench: M=matrix, B=buttons, W=direct, S=setup, I=status, O=WiFi off, X=clear."));
   #endif
   #endif
   digitalWrite(g_FeederStepperEnPin,HIGH); //disable stepper driver
@@ -1948,11 +1952,26 @@ static void r4RenderMatrixPage(int16_t const temperature)
   else
   {
     r4DrawMatrixWord(pixels, "HBT");
-    pixels[(7 * 12) + (g_R4MatrixHeartbeat % 12)] = 1;
+    pixels[(7 * 12) + (g_R4MatrixHeartbeat % 11)] = 1;
     if(pageChanged)
     {
       Serial.println(F("PAGE HBT: main-loop heartbeat"));
     }
+  }
+  if(g_R4MatrixLastButtonMask & 0x01)
+  {
+    pixels[(0 * 12) + 11] = 1;
+    pixels[(1 * 12) + 11] = 1;
+  }
+  if(g_R4MatrixLastButtonMask & 0x02)
+  {
+    pixels[(3 * 12) + 11] = 1;
+    pixels[(4 * 12) + 11] = 1;
+  }
+  if(g_R4MatrixLastButtonMask & 0x04)
+  {
+    pixels[(6 * 12) + 11] = 1;
+    pixels[(7 * 12) + 11] = 1;
   }
   g_R4LedMatrix.loadPixels(pixels, sizeof(pixels));
   g_R4MatrixLastPage = g_R4MatrixPage;
@@ -1974,6 +1993,8 @@ static void r4BeginMatrixDebug(void)
   g_R4MatrixLastPage = UINT8_MAX;
   g_R4MatrixPageTime = millis();
   g_R4MatrixHeartbeatTime = g_R4MatrixPageTime;
+  g_R4MatrixLastButtonMask = UINT8_MAX;
+  g_R4MatrixButtonChanged = true;
   r4ResetWatchdog();
   if(!g_R4MatrixReady)
   {
@@ -1992,6 +2013,19 @@ static void r4HandleBenchSerial(void)
   while(Serial.available())
   {
     char const command = Serial.read();
+    if(command == 'B' || command == 'b')
+    {
+      g_R4ButtonTraceActive = !g_R4ButtonTraceActive;
+      g_R4MatrixLastButtonMask = UINT8_MAX;
+      Serial.print(F("BUTTON TRACE "));
+      Serial.print(g_R4ButtonTraceActive ? F("ON") : F("OFF"));
+      if(!g_R4ButtonTraceActive && g_R4MatrixDebugActive)
+      {
+        Serial.print(F(" (MATRIX TRACE REMAINS ACTIVE)"));
+      }
+      Serial.println();
+      continue;
+    }
     if(command == 'O' || command == 'o')
     {
       #if NZHS_HAS_WIFI
@@ -2092,6 +2126,41 @@ static void r4HandleBenchSerial(void)
 }
 
 /*---------------------------------------------------------------------------*/
+/*! @brief      Report raw active-low button transitions when requested.
+*//*-------------------------------------------------------------------------*/
+static void r4UpdateButtonTrace(void)
+{
+  if(!g_R4ButtonTraceActive && !g_R4MatrixDebugActive)
+  {
+    return;
+  }
+  uint8_t const buttonMask = (readStartButton() ? 0x01 : 0) |
+                             (readModeButton() ? 0x02 : 0) |
+                             (readUpButton() ? 0x04 : 0);
+  if(buttonMask == g_R4MatrixLastButtonMask)
+  {
+    return;
+  }
+  bool const startPressed = (buttonMask & 0x01) &&
+                            !(g_R4MatrixLastButtonMask & 0x01);
+  Serial.print(F("BUTTONS START="));
+  Serial.print(buttonMask & 0x01 ? F("ON") : F("OFF"));
+  Serial.print(F(" MODE="));
+  Serial.print(buttonMask & 0x02 ? F("ON") : F("OFF"));
+  Serial.print(F(" UP="));
+  Serial.println(buttonMask & 0x04 ? F("ON") : F("OFF"));
+  g_R4MatrixLastButtonMask = buttonMask;
+  if(g_R4MatrixDebugActive)
+  {
+    g_R4MatrixButtonChanged = true;
+    if(startPressed)
+    {
+      Serial.println(F("START BLOCKED: RESET TO EXIT MATRIX DEBUG"));
+    }
+  }
+}
+
+/*---------------------------------------------------------------------------*/
 /*! @brief      Keep the diagnostic display alive and all heating disabled.
 *//*-------------------------------------------------------------------------*/
 static void r4UpdateMatrixDebug(int16_t const temperature)
@@ -2103,6 +2172,8 @@ static void r4UpdateMatrixDebug(int16_t const temperature)
   turnAnnealerOff();
   turnStartStopLedOff();
   digitalWrite(g_FeederStepperEnPin, HIGH);
+  bool const buttonChanged = g_R4MatrixButtonChanged;
+  g_R4MatrixButtonChanged = false;
   if(!g_R4MatrixReady)
   {
     return;
@@ -2128,7 +2199,7 @@ static void r4UpdateMatrixDebug(int16_t const temperature)
     g_R4MatrixHeartbeatTime = currentTime;
     r4RenderMatrixPage(temperature);
   }
-  else if(g_R4MatrixLastPage != g_R4MatrixPage)
+  else if(buttonChanged || g_R4MatrixLastPage != g_R4MatrixPage)
   {
     r4RenderMatrixPage(temperature);
   }
@@ -3262,6 +3333,16 @@ void loop()
   upKey = readUpButton();
   #if NZHS_HAS_LED_MATRIX
   r4HandleBenchSerial();
+  r4UpdateButtonTrace();
+  if(g_R4MatrixDebugActive)
+  {
+    // Matrix diagnostics own the physical buttons. Their raw state remains
+    // visible over Serial and on the right-edge LED pairs, but they must not
+    // navigate menus or reach any run state.
+    start = false;
+    modeKey = false;
+    upKey = false;
+  }
   #endif
 
   // DS18B20 conversion takes longer than the 25 ms analysis sampler.
