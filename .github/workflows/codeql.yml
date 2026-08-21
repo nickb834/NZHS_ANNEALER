@@ -1,0 +1,116 @@
+name: CodeQL
+
+on:
+  push:
+    branches:
+      - master
+  pull_request:
+    branches:
+      - master
+  schedule:
+    - cron: "23 4 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: codeql-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  analyze:
+    name: Analyze C/C++
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    permissions:
+      contents: read
+      security-events: write
+    env:
+      SKETCH: NZHS_ANNEALER_128x32_OLED
+      BUILD_ROOT: /tmp/nzhs-codeql
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@db488ddef3bf6cb639b32c2e9a7c0a7ea8271d28 # v4
+        with:
+          languages: c-cpp
+          build-mode: manual
+
+      - name: Install Arduino CLI
+        shell: bash
+        env:
+          ARDUINO_CLI_VERSION: 1.5.1
+        run: |
+          set -euo pipefail
+
+          case "$(uname -m)" in
+            aarch64)
+              archive="arduino-cli_${ARDUINO_CLI_VERSION}_Linux_ARM64.tar.gz"
+              expected_sha='1e69e077479f300614d4551334e0a33f08ee40b04315d83b8e7e0e94f0d0ee62'
+              ;;
+            x86_64)
+              archive="arduino-cli_${ARDUINO_CLI_VERSION}_Linux_64bit.tar.gz"
+              expected_sha='28a8e119c498a25607821c36cb2dc49e8463941b261a0d99091baa7bc692dd2b'
+              ;;
+            *)
+              echo "Unsupported Linux architecture: $(uname -m)" >&2
+              exit 1
+              ;;
+          esac
+
+          install_dir="$RUNNER_TEMP/arduino-cli-bin"
+          download="$RUNNER_TEMP/$archive"
+          mkdir -p "$install_dir"
+          curl --fail --location --retry 3 \
+            "https://github.com/arduino/arduino-cli/releases/download/v${ARDUINO_CLI_VERSION}/${archive}" \
+            --output "$download"
+          echo "$expected_sha  $download" | sha256sum --check
+          tar -xzf "$download" -C "$install_dir" arduino-cli
+          echo "$install_dir" >> "$GITHUB_PATH"
+          "$install_dir/arduino-cli" version
+
+      - name: Install pinned board packages and libraries
+        shell: bash
+        run: |
+          set -euo pipefail
+          arduino-cli config init --overwrite
+          arduino-cli core update-index
+          arduino-cli core install arduino:avr@1.8.8
+          arduino-cli core install arduino:renesas_uno@1.6.0
+          arduino-cli lib update-index
+          arduino-cli lib install 'OneWire@2.3.8'
+          arduino-cli lib install 'DallasTemperature@4.0.6'
+          arduino-cli lib install 'Servo@1.3.0'
+
+      - name: Build production firmware targets
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p \
+            "$BUILD_ROOT/uno-r3" \
+            "$BUILD_ROOT/r4-minima" \
+            "$BUILD_ROOT/r4-wifi"
+
+          arduino-cli compile --clean \
+            --fqbn arduino:avr:uno \
+            --build-path "$BUILD_ROOT/uno-r3" \
+            "$SKETCH"
+          arduino-cli compile --clean \
+            --fqbn arduino:renesas_uno:minima \
+            --build-path "$BUILD_ROOT/r4-minima" \
+            "$SKETCH"
+          arduino-cli compile --clean \
+            --fqbn arduino:renesas_uno:unor4wifi \
+            --build-path "$BUILD_ROOT/r4-wifi" \
+            "$SKETCH"
+
+      - name: Analyze C and C++
+        uses: github/codeql-action/analyze@db488ddef3bf6cb639b32c2e9a7c0a7ea8271d28 # v4
+        with:
+          category: /language:c-cpp
