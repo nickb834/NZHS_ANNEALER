@@ -1,0 +1,251 @@
+name: Firmware CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: firmware-ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    name: Lint firmware and documentation
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Check Arduino sketch structure
+        uses: arduino/arduino-lint-action@v3
+        with:
+          path: NZHS_ANNEALER_128x32_OLED
+          project-type: sketch
+          compliance: specification
+          library-manager: false
+
+      - name: Check changed source whitespace
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          BEFORE_SHA: ${{ github.event.before }}
+        run: |
+          set -euo pipefail
+          if [[ "$EVENT_NAME" == "pull_request" ]]; then
+            range="$BASE_SHA...HEAD"
+          elif [[ -n "${BEFORE_SHA:-}" && ! "$BEFORE_SHA" =~ ^0+$ ]]; then
+            range="$BEFORE_SHA..HEAD"
+          else
+            range="HEAD^..HEAD"
+          fi
+          git diff --check "$range" -- \
+            '*.ino' '*.h' '*.md' '*.yml' '*.yaml' '.gitignore'
+
+      - name: Check local documentation links
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import pathlib
+          import re
+          import sys
+          import urllib.parse
+
+          root = pathlib.Path.cwd()
+          errors = []
+          markdown_link = re.compile(r'!?\[[^\]]*\]\(([^)]+)\)')
+          html_link = re.compile(r'(?:href|src)=["\']([^"\']+)["\']')
+
+          for document in root.rglob('*.md'):
+              text = document.read_text(encoding='utf-8')
+              targets = markdown_link.findall(text) + html_link.findall(text)
+              for raw_target in targets:
+                  target = raw_target.strip().strip('<>')
+                  if not target or target.startswith(('#', 'http://', 'https://', 'mailto:')):
+                      continue
+                  target = target.split('#', 1)[0].split('?', 1)[0]
+                  target = urllib.parse.unquote(target)
+                  if not target:
+                      continue
+                  resolved = (root / target.lstrip('/')) if target.startswith('/') else (document.parent / target)
+                  if not resolved.exists():
+                      errors.append(f'{document.relative_to(root)}: missing local target {raw_target}')
+
+          if errors:
+              print('\n'.join(errors), file=sys.stderr)
+              raise SystemExit(1)
+          print('All local Markdown/HTML links resolve.')
+          PY
+
+  build:
+    name: Build and verify firmware
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      SKETCH: NZHS_ANNEALER_128x32_OLED
+      # The R4 core embeds PROJECT_NAME, including the build path, in its BIN.
+      # Keep this path stable so local and GitHub artifact comparisons are valid.
+      BUILD_ROOT: /tmp/nzhs-firmware-ci
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install Arduino CLI
+        uses: arduino/setup-arduino-cli@v2
+        with:
+          version: 1.5.1
+
+      - name: Install pinned board packages and libraries
+        shell: bash
+        run: |
+          set -euo pipefail
+          arduino-cli config init --overwrite
+          arduino-cli core update-index
+          arduino-cli core install arduino:avr@1.8.8
+          arduino-cli core install arduino:renesas_uno@1.6.0
+          arduino-cli lib update-index
+          arduino-cli lib install 'OneWire@2.3.8'
+          arduino-cli lib install 'DallasTemperature@4.0.6'
+          arduino-cli lib install 'Servo@1.3.0'
+          arduino-cli version
+          arduino-cli core list
+          arduino-cli lib list
+
+      - name: Build Uno R3
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$BUILD_ROOT/uno-r3" "$BUILD_ROOT/logs"
+          arduino-cli compile \
+            --clean \
+            --fqbn arduino:avr:uno \
+            --build-path "$BUILD_ROOT/uno-r3" \
+            "$SKETCH" 2>&1 | tee "$BUILD_ROOT/logs/uno-r3.txt"
+
+      - name: Build Uno R4 Minima
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$BUILD_ROOT/r4-minima"
+          arduino-cli compile \
+            --clean \
+            --fqbn arduino:renesas_uno:minima \
+            --build-path "$BUILD_ROOT/r4-minima" \
+            "$SKETCH" 2>&1 | tee "$BUILD_ROOT/logs/r4-minima.txt"
+
+      - name: Build Uno R4 WiFi
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$BUILD_ROOT/r4-wifi"
+          arduino-cli compile \
+            --clean \
+            --fqbn arduino:renesas_uno:unor4wifi \
+            --build-path "$BUILD_ROOT/r4-wifi" \
+            "$SKETCH" 2>&1 | tee "$BUILD_ROOT/logs/r4-wifi.txt"
+
+      - name: Enforce firmware size headroom
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          flash_usage() {
+            sed -n 's/^Sketch uses \([0-9][0-9]*\) bytes.*/\1/p' "$1" | head -1
+          }
+          ram_usage() {
+            sed -n 's/^Global variables use \([0-9][0-9]*\) bytes.*/\1/p' "$1" | head -1
+          }
+
+          r3_flash="$(flash_usage "$BUILD_ROOT/logs/uno-r3.txt")"
+          r3_ram="$(ram_usage "$BUILD_ROOT/logs/uno-r3.txt")"
+          minima_flash="$(flash_usage "$BUILD_ROOT/logs/r4-minima.txt")"
+          minima_ram="$(ram_usage "$BUILD_ROOT/logs/r4-minima.txt")"
+          wifi_flash="$(flash_usage "$BUILD_ROOT/logs/r4-wifi.txt")"
+          wifi_ram="$(ram_usage "$BUILD_ROOT/logs/r4-wifi.txt")"
+
+          test -n "$r3_flash" && test -n "$r3_ram"
+          test -n "$minima_flash" && test -n "$minima_ram"
+          test -n "$wifi_flash" && test -n "$wifi_ram"
+
+          (( r3_flash <= 30500 )) || { echo "Uno R3 flash ceiling exceeded: $r3_flash > 30500"; exit 1; }
+          (( r3_ram <= 1536 )) || { echo "Uno R3 SRAM ceiling exceeded: $r3_ram > 1536"; exit 1; }
+          (( minima_flash <= 220000 )) || { echo "R4 Minima flash ceiling exceeded"; exit 1; }
+          (( minima_ram <= 20480 )) || { echo "R4 Minima SRAM ceiling exceeded"; exit 1; }
+          (( wifi_flash <= 220000 )) || { echo "R4 WiFi flash ceiling exceeded"; exit 1; }
+          (( wifi_ram <= 20480 )) || { echo "R4 WiFi SRAM ceiling exceeded"; exit 1; }
+
+          {
+            echo '## Firmware size report'
+            echo
+            echo '| Target | Flash bytes | SRAM bytes |'
+            echo '| --- | ---: | ---: |'
+            echo "| Uno R3 | $r3_flash | $r3_ram |"
+            echo "| Uno R4 Minima | $minima_flash | $minima_ram |"
+            echo "| Uno R4 WiFi | $wifi_flash | $wifi_ram |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Validate embedded web code
+        shell: bash
+        run: |
+          node - <<'NODE'
+          const fs = require('fs');
+          const source = fs.readFileSync(
+            'NZHS_ANNEALER_128x32_OLED/NZHS_ANNEALER_128x32_OLED.ino',
+            'utf8'
+          );
+          const scripts = [...source.matchAll(/<script>\n([\s\S]*?)<\/script>/g)];
+          if (!scripts.length) throw new Error('Embedded dashboard script not found');
+          for (const script of scripts) new Function(script[1]);
+          const manifest = source.match(/R"JSON\(([\s\S]*?)\)JSON"/);
+          if (!manifest) throw new Error('Embedded web manifest not found');
+          JSON.parse(manifest[1]);
+          console.log(`Validated ${scripts.length} embedded script(s) and web manifest.`);
+          NODE
+
+      - name: Verify tracked firmware artifacts
+        shell: bash
+        run: |
+          set -euo pipefail
+          project='NZHS_ANNEALER_128x32_OLED.ino'
+          cmp "$BUILD_ROOT/uno-r3/$project.hex" \
+              "$SKETCH/$project.standard.hex"
+          cmp "$BUILD_ROOT/uno-r3/$project.with_bootloader.hex" \
+              "$SKETCH/$project.with_bootloader.standard.hex"
+          cmp "$BUILD_ROOT/r4-wifi/$project.bin" \
+              "$SKETCH/$project.uno-r4-wifi.bin"
+          echo 'Tracked Uno R3 and R4 WiFi artifacts match the pinned CI build.'
+
+      - name: Collect firmware outputs
+        shell: bash
+        run: |
+          set -euo pipefail
+          project='NZHS_ANNEALER_128x32_OLED.ino'
+          mkdir -p "$BUILD_ROOT/release"
+          cp "$BUILD_ROOT/uno-r3/$project.hex" \
+             "$BUILD_ROOT/release/$project.standard.hex"
+          cp "$BUILD_ROOT/uno-r3/$project.with_bootloader.hex" \
+             "$BUILD_ROOT/release/$project.with_bootloader.standard.hex"
+          cp "$BUILD_ROOT/r4-minima/$project.bin" \
+             "$BUILD_ROOT/release/$project.uno-r4-minima.bin"
+          cp "$BUILD_ROOT/r4-wifi/$project.bin" \
+             "$BUILD_ROOT/release/$project.uno-r4-wifi.bin"
+          (cd "$BUILD_ROOT/release" && sha256sum * > SHA256SUMS)
+
+      - name: Upload firmware and build reports
+        uses: actions/upload-artifact@v4
+        with:
+          name: nzhs-firmware-${{ github.sha }}
+          path: |
+            /tmp/nzhs-firmware-ci/release
+            /tmp/nzhs-firmware-ci/logs
+          if-no-files-found: error
+          retention-days: 14

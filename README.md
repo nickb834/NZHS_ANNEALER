@@ -271,6 +271,20 @@ The tracked release artifacts are:
 When firmware source changes, rebuild all tracked artifacts from the exact commit
 before distributing or pushing them.
 
+The Uno R4 core embeds its absolute build path in the application image. CI and
+local release builds therefore use `/tmp/nzhs-firmware-ci/r4-wifi` as the
+canonical R4 WiFi build path before comparing or replacing the tracked BIN:
+
+```sh
+arduino-cli compile --clean \
+  --fqbn arduino:renesas_uno:unor4wifi \
+  --build-path /tmp/nzhs-firmware-ci/r4-wifi \
+  NZHS_ANNEALER_128x32_OLED
+```
+
+Using another path can produce a functionally equivalent but byte-different
+R4 BIN, which will deliberately fail the firmware CI artifact check.
+
 ## Uno R3 and R4 support
 
 [`AnnealerPlatform.h`](NZHS_ANNEALER_128x32_OLED/AnnealerPlatform.h) selects an
