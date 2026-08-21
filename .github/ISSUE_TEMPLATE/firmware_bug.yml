@@ -1,0 +1,95 @@
+name: Firmware bug
+description: Report incorrect firmware, display, control, sensor or WiFi behaviour.
+title: "[Bug] "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Do not test a fault with the high-current supply energised unless the test specifically requires it and can be performed safely.
+
+  - type: dropdown
+    id: board
+    attributes:
+      label: Board
+      options:
+        - Uno R3 or compatible ATmega328P board
+        - Uno R4 Minima
+        - Uno R4 WiFi
+        - SimulIDE Uno R3 model
+        - Other
+    validations:
+      required: true
+
+  - type: input
+    id: firmware
+    attributes:
+      label: Firmware version or commit
+      placeholder: "For example: 4.1.0 or a commit SHA"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: install
+    attributes:
+      label: Installation method
+      options:
+        - Arduino IDE
+        - Arduino CLI
+        - Checked-in HEX or BIN artifact
+        - SimulIDE
+        - Other
+    validations:
+      required: true
+
+  - type: textarea
+    id: hardware
+    attributes:
+      label: Hardware configuration
+      description: Include shield revision, display, sensors, feeder, power switching and anything disconnected or substituted.
+    validations:
+      required: true
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: What happened?
+      description: Describe the observed behaviour and when it occurs.
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Power on...
+        2. Select...
+        3. Press...
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behaviour
+    validations:
+      required: true
+
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Logs and evidence
+      description: Add serial output, screenshots, video, current/temperature readings or simulator details. Remove WiFi credentials and other secrets.
+
+  - type: textarea
+    id: workaround
+    attributes:
+      label: Workaround or additional notes
+
+  - type: checkboxes
+    id: safety
+    attributes:
+      label: Safety
+      options:
+        - label: I made the equipment electrically safe before inspecting or rewiring it.
+          required: true

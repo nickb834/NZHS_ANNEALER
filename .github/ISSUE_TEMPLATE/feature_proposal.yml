@@ -1,0 +1,55 @@
+name: Feature proposal
+description: Propose a firmware, user-interface, hardware-support or diagnostic improvement.
+title: "[Feature] "
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem to solve
+      description: Explain the need or limitation before describing the implementation.
+    validations:
+      required: true
+
+  - type: textarea
+    id: behaviour
+    attributes:
+      label: Proposed behaviour
+      description: Describe what the user would see and how they would operate it.
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: targets
+    attributes:
+      label: Intended targets
+      options:
+        - label: Uno R3 or compatible ATmega328P board
+        - label: Uno R4 Minima
+        - label: Uno R4 WiFi
+        - label: SimulIDE Uno R3 model
+        - label: Not yet decided
+
+  - type: textarea
+    id: compatibility
+    attributes:
+      label: Compatibility and storage
+      description: Note any pin, timing, EEPROM, profile, serial protocol or saved-data implications.
+
+  - type: textarea
+    id: safety
+    attributes:
+      label: Safety implications
+      description: Consider annealing output, automatic feeding, temperature/current protection, cooldown and the drop gate. State "None known" if appropriate.
+    validations:
+      required: true
+
+  - type: textarea
+    id: validation
+    attributes:
+      label: Suggested validation
+      description: Describe useful simulator, bench and complete-machine tests.
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
