@@ -20,12 +20,13 @@ jobs:
 
     steps:
       - name: Check out repository
-        uses: actions/checkout@v5
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           fetch-depth: 0
+          persist-credentials: false
 
       - name: Check Arduino sketch structure
-        uses: arduino/arduino-lint-action@v3
+        uses: arduino/arduino-lint-action@9a3603836c75e41753e531167395edeb90ba5dae # v3.0.0
         with:
           path: NZHS_ANNEALER_128x32_OLED
           project-type: sketch
@@ -42,9 +43,13 @@ jobs:
           set -euo pipefail
           if [[ "$EVENT_NAME" == "pull_request" ]]; then
             range="$BASE_SHA...HEAD"
-          elif [[ -n "${BEFORE_SHA:-}" && ! "$BEFORE_SHA" =~ ^0+$ ]]; then
+          elif [[ -n "${BEFORE_SHA:-}" && ! "$BEFORE_SHA" =~ ^0+$ ]] &&
+               git cat-file -e "${BEFORE_SHA}^{commit}" 2>/dev/null &&
+               git merge-base --is-ancestor "$BEFORE_SHA" HEAD; then
             range="$BEFORE_SHA..HEAD"
           else
+            # New branches and rewritten histories may not contain the previous
+            # remote tip. The PR run still checks the complete branch diff.
             range="HEAD^..HEAD"
           fi
           git diff --check "$range" -- \
@@ -97,12 +102,42 @@ jobs:
 
     steps:
       - name: Check out repository
-        uses: actions/checkout@v5
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
 
       - name: Install Arduino CLI
-        uses: arduino/setup-arduino-cli@v2
-        with:
-          version: 1.5.1
+        shell: bash
+        env:
+          ARDUINO_CLI_VERSION: 1.5.1
+        run: |
+          set -euo pipefail
+
+          case "$(uname -m)" in
+            arm64)
+              archive="arduino-cli_${ARDUINO_CLI_VERSION}_macOS_ARM64.tar.gz"
+              expected_sha='cb952e8c1621c95ef5f1d17831c945e3d0ec5973f89c557a7ec8feb9c4f7d4c9'
+              ;;
+            x86_64)
+              archive="arduino-cli_${ARDUINO_CLI_VERSION}_macOS_64bit.tar.gz"
+              expected_sha='c982e940027996bea9901050e95fae99c59c1dcfee54beedecaf28141e7bf2e7'
+              ;;
+            *)
+              echo "Unsupported macOS architecture: $(uname -m)" >&2
+              exit 1
+              ;;
+          esac
+
+          install_dir="$RUNNER_TEMP/arduino-cli-bin"
+          download="$RUNNER_TEMP/$archive"
+          mkdir -p "$install_dir"
+          curl --fail --location --retry 3 \
+            "https://github.com/arduino/arduino-cli/releases/download/v${ARDUINO_CLI_VERSION}/${archive}" \
+            --output "$download"
+          echo "$expected_sha  $download" | shasum -a 256 --check
+          tar -xzf "$download" -C "$install_dir" arduino-cli
+          echo "$install_dir" >> "$GITHUB_PATH"
+          "$install_dir/arduino-cli" version
 
       - name: Install pinned board packages and libraries
         shell: bash
@@ -241,7 +276,7 @@ jobs:
           (cd "$BUILD_ROOT/release" && shasum -a 256 * > SHA256SUMS)
 
       - name: Upload firmware and build reports
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: nzhs-firmware-${{ github.sha }}
           path: |
