@@ -20,7 +20,7 @@ jobs:
 
     steps:
       - name: Check out repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           fetch-depth: 0
 
@@ -87,7 +87,7 @@ jobs:
 
   build:
     name: Build and verify firmware
-    runs-on: ubuntu-latest
+    runs-on: macos-14
     timeout-minutes: 30
     env:
       SKETCH: NZHS_ANNEALER_128x32_OLED
@@ -97,7 +97,7 @@ jobs:
 
     steps:
       - name: Check out repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Install Arduino CLI
         uses: arduino/setup-arduino-cli@v2
@@ -238,7 +238,7 @@ jobs:
              "$BUILD_ROOT/release/$project.uno-r4-minima.bin"
           cp "$BUILD_ROOT/r4-wifi/$project.bin" \
              "$BUILD_ROOT/release/$project.uno-r4-wifi.bin"
-          (cd "$BUILD_ROOT/release" && sha256sum * > SHA256SUMS)
+          (cd "$BUILD_ROOT/release" && shasum -a 256 * > SHA256SUMS)
 
       - name: Upload firmware and build reports
         uses: actions/upload-artifact@v4
