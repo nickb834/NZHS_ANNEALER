@@ -6,7 +6,7 @@ Firmware for the NZHS Annealer Shield, supporting Arduino Uno-compatible
 ATmega328P boards and the Arduino Uno R4 WiFi from the same sketch. For the
 annealer build and hardware guide, see [MGNZ Makes](http://www.mgnz-makes.com/).
 
-This branch is firmware version **4.1.0**. Test changes with the machine
+This branch is firmware version **4.2.0**. Test changes with the machine
 attended before relying on automatic operation. Menu changes can be safely
 tested with the included Uno R3 [SimulIDE simulation](simulide/).
 
@@ -376,11 +376,14 @@ testing. See the [SimulIDE MCU list](https://simulide.com/p/mcus/) and its
 
 The detailed release/hardware validation checklist is in
 [docs/TESTING.md](docs/TESTING.md).
+The tagged-release, checksum and provenance procedure is in
+[docs/RELEASING.md](docs/RELEASING.md).
 
 ## Version history
 
-SW version 4.2.0 (Uno R4 WiFi)
+SW version 4.2.0
 
+- Unified the displayed release version across Uno R3, R4 Minima and R4 WiFi.
 - Added visible WiFi monitor and setup controls under Settings.
 - Added persistent LAN credentials, automatic reconnect and setup-AP fallback.
 - Added WiFi connection state and IP address to Info while preserving the

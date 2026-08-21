@@ -7,6 +7,8 @@
 # Build policy, hardware validation and safety documentation.
 /.github/workflows/ @nickb834
 /docs/TESTING.md @nickb834
+/docs/RELEASING.md @nickb834
+/docs/releases/ @nickb834
 /docs/R4_MATRIX_DEBUG.md @nickb834
 /docs/R4_WIFI_MONITOR.md @nickb834
 /simulide/ @nickb834

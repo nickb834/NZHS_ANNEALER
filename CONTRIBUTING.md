@@ -68,3 +68,7 @@ while the annealer is idle, not while annealing or in cooldown.
   conversations before merging.
 - Use squash merge so `master` receives one coherent commit for the pull
   request.
+
+Tagged releases follow [docs/RELEASING.md](docs/RELEASING.md). Do not create a
+release tag until the version, tracked artifacts and hardware-validation record
+are complete on `master`.

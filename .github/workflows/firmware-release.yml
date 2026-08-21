@@ -1,0 +1,297 @@
+name: Firmware Release
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build release candidates
+    runs-on: macos-14
+    timeout-minutes: 35
+    env:
+      SKETCH: NZHS_ANNEALER_128x32_OLED
+      BUILD_ROOT: /tmp/nzhs-firmware-ci
+
+    steps:
+      - name: Check out tagged source
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Validate release tag and record
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME#v}"
+          validation_file="docs/releases/${GITHUB_REF_NAME}-validation.md"
+
+          [[ "$GITHUB_REF_NAME" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || {
+            echo "Release tag must use vX.Y.Z with numeric components." >&2
+            exit 1
+          }
+          git fetch --no-tags origin master:refs/remotes/origin/master
+          git merge-base --is-ancestor "$GITHUB_SHA" origin/master || {
+            echo "Release tag must point to a commit on origin/master." >&2
+            exit 1
+          }
+          grep -Fqx "#define SOFTWARE_VERSION F(\"${version}\")" \
+            "$SKETCH/$SKETCH.ino" || {
+              echo "Tag ${GITHUB_REF_NAME} does not match SOFTWARE_VERSION." >&2
+              exit 1
+            }
+          test -f "$validation_file" || {
+            echo "Missing $validation_file" >&2
+            exit 1
+          }
+          grep -Fqx 'Release status: Ready' "$validation_file" || {
+            echo "$validation_file is not marked Ready." >&2
+            exit 1
+          }
+
+      - name: Install Arduino CLI
+        shell: bash
+        env:
+          ARDUINO_CLI_VERSION: 1.5.1
+        run: |
+          set -euo pipefail
+
+          case "$(uname -m)" in
+            arm64)
+              archive="arduino-cli_${ARDUINO_CLI_VERSION}_macOS_ARM64.tar.gz"
+              expected_sha='cb952e8c1621c95ef5f1d17831c945e3d0ec5973f89c557a7ec8feb9c4f7d4c9'
+              ;;
+            x86_64)
+              archive="arduino-cli_${ARDUINO_CLI_VERSION}_macOS_64bit.tar.gz"
+              expected_sha='c982e940027996bea9901050e95fae99c59c1dcfee54beedecaf28141e7bf2e7'
+              ;;
+            *)
+              echo "Unsupported macOS architecture: $(uname -m)" >&2
+              exit 1
+              ;;
+          esac
+
+          install_dir="$RUNNER_TEMP/arduino-cli-bin"
+          download="$RUNNER_TEMP/$archive"
+          mkdir -p "$install_dir"
+          curl --fail --location --retry 3 \
+            "https://github.com/arduino/arduino-cli/releases/download/v${ARDUINO_CLI_VERSION}/${archive}" \
+            --output "$download"
+          echo "$expected_sha  $download" | shasum -a 256 --check
+          tar -xzf "$download" -C "$install_dir" arduino-cli
+          echo "$install_dir" >> "$GITHUB_PATH"
+          "$install_dir/arduino-cli" version
+
+      - name: Install pinned board packages and libraries
+        shell: bash
+        run: |
+          set -euo pipefail
+          arduino-cli config init --overwrite
+          arduino-cli core update-index
+          arduino-cli core install arduino:avr@1.8.8
+          arduino-cli core install arduino:renesas_uno@1.6.0
+          arduino-cli lib update-index
+          arduino-cli lib install 'OneWire@2.3.8'
+          arduino-cli lib install 'DallasTemperature@4.0.6'
+          arduino-cli lib install 'Servo@1.3.0'
+
+      - name: Build release targets
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p \
+            "$BUILD_ROOT/uno-r3" \
+            "$BUILD_ROOT/r4-minima" \
+            "$BUILD_ROOT/r4-wifi" \
+            "$BUILD_ROOT/logs"
+
+          arduino-cli compile --clean \
+            --fqbn arduino:avr:uno \
+            --build-path "$BUILD_ROOT/uno-r3" \
+            "$SKETCH" 2>&1 | tee "$BUILD_ROOT/logs/uno-r3.txt"
+          arduino-cli compile --clean \
+            --fqbn arduino:renesas_uno:minima \
+            --build-path "$BUILD_ROOT/r4-minima" \
+            "$SKETCH" 2>&1 | tee "$BUILD_ROOT/logs/r4-minima.txt"
+          arduino-cli compile --clean \
+            --fqbn arduino:renesas_uno:unor4wifi \
+            --build-path "$BUILD_ROOT/r4-wifi" \
+            "$SKETCH" 2>&1 | tee "$BUILD_ROOT/logs/r4-wifi.txt"
+
+      - name: Check size and tracked artifacts
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          flash_usage() {
+            sed -n 's/^Sketch uses \([0-9][0-9]*\) bytes.*/\1/p' "$1" | head -1
+          }
+          ram_usage() {
+            sed -n 's/^Global variables use \([0-9][0-9]*\) bytes.*/\1/p' "$1" | head -1
+          }
+
+          r3_flash="$(flash_usage "$BUILD_ROOT/logs/uno-r3.txt")"
+          r3_ram="$(ram_usage "$BUILD_ROOT/logs/uno-r3.txt")"
+          minima_flash="$(flash_usage "$BUILD_ROOT/logs/r4-minima.txt")"
+          minima_ram="$(ram_usage "$BUILD_ROOT/logs/r4-minima.txt")"
+          wifi_flash="$(flash_usage "$BUILD_ROOT/logs/r4-wifi.txt")"
+          wifi_ram="$(ram_usage "$BUILD_ROOT/logs/r4-wifi.txt")"
+
+          test -n "$r3_flash" && test -n "$r3_ram"
+          test -n "$minima_flash" && test -n "$minima_ram"
+          test -n "$wifi_flash" && test -n "$wifi_ram"
+          (( r3_flash <= 30500 ))
+          (( r3_ram <= 1536 ))
+          (( minima_flash <= 220000 ))
+          (( minima_ram <= 20480 ))
+          (( wifi_flash <= 220000 ))
+          (( wifi_ram <= 20480 ))
+
+          project="$SKETCH.ino"
+          cmp "$BUILD_ROOT/uno-r3/$project.hex" \
+              "$SKETCH/$project.standard.hex"
+          cmp "$BUILD_ROOT/uno-r3/$project.with_bootloader.hex" \
+              "$SKETCH/$project.with_bootloader.standard.hex"
+          cmp "$BUILD_ROOT/r4-wifi/$project.bin" \
+              "$SKETCH/$project.uno-r4-wifi.bin"
+
+          {
+            echo "R3_FLASH=$r3_flash"
+            echo "R3_RAM=$r3_ram"
+            echo "MINIMA_FLASH=$minima_flash"
+            echo "MINIMA_RAM=$minima_ram"
+            echo "WIFI_FLASH=$wifi_flash"
+            echo "WIFI_RAM=$wifi_ram"
+          } >> "$GITHUB_ENV"
+
+      - name: Validate embedded web code
+        shell: bash
+        run: |
+          node - <<'NODE'
+          const fs = require('fs');
+          const source = fs.readFileSync(
+            'NZHS_ANNEALER_128x32_OLED/NZHS_ANNEALER_128x32_OLED.ino',
+            'utf8'
+          );
+          const scripts = [...source.matchAll(/<script>\n([\s\S]*?)<\/script>/g)];
+          if (!scripts.length) throw new Error('Embedded dashboard script not found');
+          for (const script of scripts) new Function(script[1]);
+          const manifest = source.match(/R"JSON\(([\s\S]*?)\)JSON"/);
+          if (!manifest) throw new Error('Embedded web manifest not found');
+          JSON.parse(manifest[1]);
+          NODE
+
+      - name: Assemble release files
+        shell: bash
+        run: |
+          set -euo pipefail
+          project="$SKETCH.ino"
+          validation_file="docs/releases/${GITHUB_REF_NAME}-validation.md"
+          release_dir="$BUILD_ROOT/release"
+          mkdir -p "$release_dir"
+
+          cp "$BUILD_ROOT/uno-r3/$project.hex" \
+             "$release_dir/$project.standard.hex"
+          cp "$BUILD_ROOT/uno-r3/$project.with_bootloader.hex" \
+             "$release_dir/$project.with_bootloader.standard.hex"
+          cp "$BUILD_ROOT/r4-minima/$project.bin" \
+             "$release_dir/$project.uno-r4-minima.bin"
+          cp "$BUILD_ROOT/r4-wifi/$project.bin" \
+             "$release_dir/$project.uno-r4-wifi.bin"
+          cp "$validation_file" "$release_dir/HARDWARE-VALIDATION.md"
+
+          {
+            echo "NZHS Annealer ${GITHUB_REF_NAME}"
+            echo "Commit: $GITHUB_SHA"
+            echo "Runner: $RUNNER_OS $RUNNER_ARCH"
+            echo "Arduino CLI: $(arduino-cli version)"
+            echo "Arduino AVR Boards: 1.8.8"
+            echo "Arduino UNO R4 Boards: 1.6.0"
+            echo "OneWire: 2.3.8"
+            echo "DallasTemperature: 4.0.6"
+            echo "Servo: 1.3.0"
+            echo "Uno R3 flash/SRAM: $R3_FLASH/$R3_RAM bytes"
+            echo "Uno R4 Minima flash/SRAM: $MINIMA_FLASH/$MINIMA_RAM bytes"
+            echo "Uno R4 WiFi flash/SRAM: $WIFI_FLASH/$WIFI_RAM bytes"
+          } > "$release_dir/BUILD-INFO.txt"
+
+          (
+            cd "$release_dir"
+            shasum -a 256 \
+              "$project.standard.hex" \
+              "$project.with_bootloader.standard.hex" \
+              "$project.uno-r4-minima.bin" \
+              "$project.uno-r4-wifi.bin" \
+              BUILD-INFO.txt \
+              HARDWARE-VALIDATION.md > SHA256SUMS
+          )
+
+      - name: Upload release build record
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: nzhs-release-${{ github.ref_name }}
+          path: |
+            /tmp/nzhs-firmware-ci/release
+            /tmp/nzhs-firmware-ci/logs
+          if-no-files-found: error
+          retention-days: 14
+
+  publish:
+    name: Attest and draft release
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    env:
+      RELEASE_ROOT: /tmp/nzhs-release-download
+
+    steps:
+      - name: Download release build record
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          name: nzhs-release-${{ github.ref_name }}
+          path: /tmp/nzhs-release-download
+
+      - name: Verify downloaded release files
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$RELEASE_ROOT/release"
+          sha256sum --check SHA256SUMS
+
+      - name: Attest release files
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-path: /tmp/nzhs-release-download/release/*
+
+      - name: Create or refresh draft release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            test "$(gh release view "$GITHUB_REF_NAME" --json isDraft --jq .isDraft)" = true || {
+              echo "Release ${GITHUB_REF_NAME} is already published." >&2
+              exit 1
+            }
+            gh release upload "$GITHUB_REF_NAME" \
+              "$RELEASE_ROOT"/release/* --clobber
+          else
+            gh release create "$GITHUB_REF_NAME" \
+              "$RELEASE_ROOT"/release/* \
+              --draft \
+              --verify-tag \
+              --title "NZHS Annealer $GITHUB_REF_NAME" \
+              --notes "Draft firmware release built and attested by GitHub Actions. Review HARDWARE-VALIDATION.md and all stated limitations before publishing."
+          fi
+
+          echo "Draft release prepared for $GITHUB_REF_NAME." >> "$GITHUB_STEP_SUMMARY"

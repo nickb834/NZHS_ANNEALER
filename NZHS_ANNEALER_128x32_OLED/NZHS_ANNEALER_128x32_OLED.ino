@@ -25,11 +25,7 @@
 //                          | | |
 //                          | | |
 //                          | | |
-#if NZHS_HAS_WIFI
 #define SOFTWARE_VERSION F("4.2.0")
-#else
-#define SOFTWARE_VERSION F("4.1.0")
-#endif
 #define SCREEN_WIDTH 128 // OLED display width, in pixels
 #define SCREEN_HEIGHT 32 // OLED display height, in pixels
 #define PSU_OVERCURRENT 12300 //12.3A
@@ -3488,7 +3484,7 @@ void loop()
       /*closeDropGate();
       if(CurrentMode == MODE_AUTOMATIC)
       {
-      	returnCaseFeederHome();
+        returnCaseFeederHome();
       }
       updateSystemState(STATE_STOPPED);
       */
@@ -4375,10 +4371,10 @@ void loop()
       {
         setSystemTimeTarget(millis() + RELOAD_TIME); //load time to fit new case
         if(CurrentMode == MODE_AUTOMATIC)
-        	{
-        		loadCase();
-            setSystemTimeTarget(millis() + RELOAD_TIME_AUTO__FEED); //load time when in auto feed mode
-        	}
+        {
+          loadCase();
+          setSystemTimeTarget(millis() + RELOAD_TIME_AUTO__FEED); //load time when in auto feed mode
+        }
       }
       updateSystemState(g_SystemState);
 
