@@ -188,7 +188,8 @@ in [R4_WIFI_MONITOR.md](R4_WIFI_MONITOR.md).
   to right, and live amps plus estimated `~J` use their final result positions.
 - Confirm serial output contains `ANALYSE,START`, timestamped SAMPLE records
   with raw input energy, END with raw/estimated energy, `efficiency_pct=80`,
-  elapsed time and peak current, and `ANALYSE,GATE_OPEN`.
+  elapsed time and peak current, and `ANALYSE,GATE_OPEN`. Confirm the R4 JSON
+  and CSV report `supply_voltage_mV=45500`.
 - Confirm the annealer switches off at eight seconds, the gate opens for five
   seconds, the DUMPING message is brief, and the completed graph has `BACK >`.
 - Hold MODE for at least 300 ms during a capture: confirm immediate annealer off,
@@ -199,7 +200,7 @@ in [R4_WIFI_MONITOR.md](R4_WIFI_MONITOR.md).
   two-second reset; save and reload the resulting profile.
 - Configure ENERGY with each four-digit editor position, including a leading
   zero such as `0300`, and verify `~J: 0300` stores a 300 J estimate and stops
-  at approximately 375 J raw input energy.
+  at approximately 375 J raw input energy using the configured 45.5 V supply.
 - Configure PEAK DROP across its percentage range and verify the separate MAX
   TIME safety limit is stored and enforced.
 - Select every profile destination, save, and confirm the Analyse working copy

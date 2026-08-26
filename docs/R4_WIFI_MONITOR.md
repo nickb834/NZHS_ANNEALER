@@ -148,8 +148,10 @@ alongside the 80% estimate.
 
 `/api/status` reports the primary 80% estimate as `energy_j`, raw electrical
 input as `input_energy_j`, and the applied factor as
-`energy_efficiency_pct`. History summaries use explicit `input_energy_mj` and
-`estimated_energy_mj` fields; CSV exports include both plus the factor.
+`energy_efficiency_pct`. It also reports the central configured supply value as
+`supply_voltage_mV`. History summaries use explicit `input_energy_mj` and
+`estimated_energy_mj` fields; CSV exports include both, the factor and the
+configured voltage.
 
 The browser polls status every 500 ms and curves every second. Requests use a
 fixed 1536-byte buffer and bounded per-loop reads; the firmware does not use a

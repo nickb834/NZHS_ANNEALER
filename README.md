@@ -191,17 +191,20 @@ Serial output uses records of the following form:
 
 ```text
 ANALYSE,START
-ANALYSE,SAMPLE,t_ms=25,current_ma=6500,input_energy_J=7.800
+ANALYSE,SAMPLE,t_ms=25,current_ma=6500,input_energy_J=7.394
 ANALYSE,END,t_ms=8000,input_energy_J=400.000,estimated_energy_J=320.000,efficiency_pct=80,peak_ma=12000
 ANALYSE,GATE_OPEN
 ```
 
 Raw input energy is calculated from measured current, elapsed time, and the
-configured 48 V supply voltage. The OLED, ENERGY profiles and primary browser
-value show 80% of that input as a deliberately approximate `~J` value. The
-factor represents assumed ZVS efficiency; it does not measure case temperature
-or account for variable coupling, coil heating and other losses. Serial, JSON
-and CSV retain the raw input value for technical analysis.
+single configured 45.5 V supply value. Analyse and normal profile ENERGY stops
+use the same elapsed-time integration, so changing
+`ANALYSIS_SUPPLY_VOLTAGE_MV` updates every energy calculation. The OLED, ENERGY
+profiles and primary browser value show 80% of that input as a deliberately
+approximate `~J` value. The factor represents assumed ZVS efficiency; it does
+not measure case temperature or account for variable coupling, coil heating and
+other losses. Serial retains raw input and estimated energy; JSON and CSV also
+report the configured voltage for technical analysis.
 
 ## Information and diagnostics
 
@@ -395,6 +398,8 @@ SW version 4.2.0
 - Unified the displayed release version across Uno R3, R4 Minima and R4 WiFi.
 - Changed user-facing ENERGY values and targets to an 80%-efficiency estimate,
   displayed as `~J`, while retaining raw input energy in technical outputs.
+- Centralised Analyse and profile ENERGY integration on the configured 45.5 V
+  supply value instead of an implicit 48 V stop-rule factor.
 - Invalidated profiles and Analyse references saved by earlier firmware so raw
   and estimated ENERGY targets cannot be confused.
 - Added visible WiFi monitor and setup controls under Settings.

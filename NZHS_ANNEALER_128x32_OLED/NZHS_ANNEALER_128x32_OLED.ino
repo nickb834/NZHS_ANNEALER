@@ -55,7 +55,7 @@
 #define ANALYSIS_GATE_OPEN_PERIOD_MS 5000UL
 #define ANALYSIS_DUMP_STATUS_MS 1000UL
 #define ANALYSIS_ABORT_HOLD_MS 300UL
-#define ANALYSIS_SUPPLY_VOLTAGE_V 48UL
+#define ANALYSIS_SUPPLY_VOLTAGE_MV 45500UL
 #define ANALYSIS_ENERGY_EFFICIENCY_PERCENT 80U
 #define ANALYSIS_GRAPH_MAX_CURRENT_MA 12500UL
 #define ANALYSIS_GRAPH_CURRENT_STEP_MA 50U
@@ -106,13 +106,13 @@
 #define EEPROM_ADDRESS_PROFILE_REFERENCE_BASE 192
 #define PROFILE_COUNT 8
 #define PROFILE_NAME_LENGTH 10
-#define PROFILE_MAGIC 0xC8
+#define PROFILE_MAGIC 0xC9
 #define PROFILE_FLAG_AUTO_RESTART 0x01
 #define PROFILE_FLAG_DUMP_BUTTON 0x02
 #define PROFILE_FLAG_STOP_TYPE_SHIFT 2
 #define PROFILE_FLAG_STOP_TYPE_MASK 0x0C
 #define PROFILE_REFERENCE_SAMPLE_COUNT 64
-#define PROFILE_REFERENCE_MAGIC 0xD7
+#define PROFILE_REFERENCE_MAGIC 0xD8
 #define PROFILE_REFERENCE_SAMPLE_OFFSET 1
 #define PROFILE_REFERENCE_PEAK_OFFSET 65
 #define PROFILE_REFERENCE_ENERGY_OFFSET 67
@@ -731,6 +731,8 @@ static_assert(EEPROM_ADDRESS_PROFILE_BASE + (PROFILE_COUNT * sizeof(tCartridgePr
 static_assert(ANALYSIS_ENERGY_EFFICIENCY_PERCENT > 0 &&
               ANALYSIS_ENERGY_EFFICIENCY_PERCENT <= 100,
               "Energy efficiency must be between 1 and 100 percent");
+static_assert(ANALYSIS_SUPPLY_VOLTAGE_MV > 0,
+              "Analysis supply voltage must be positive");
 static_assert(EEPROM_ADDRESS_PROFILE_RULE_BASE + (PROFILE_COUNT * 3) <=
               EEPROM_ADDRESS_PROFILE_REFERENCE_BASE,
               "Profile references overlap profile stop rules");
@@ -795,7 +797,8 @@ typedef struct tAnalysisConfigState
 
 typedef struct tAdaptiveAnnealState
 {
-  uint32_t energyCurrentSumTarget;
+  uint32_t inputEnergy_mJ;
+  uint32_t lastEnergySampleTime;
   uint16_t peakCurrent_ma;
   uint8_t belowPeakSamples;
 } tAdaptiveAnnealState;
@@ -1202,6 +1205,8 @@ static void beginAnalysisConfig(void);
 static inline void updateAnalysisConfig(bool const rapidTimeAdjust) __attribute__((always_inline));
 static void saveAnalysisConfigToProfile(uint8_t const slot);
 static void resetGraphCapture(uint32_t const currentTime, bool const isAnalysis);
+static uint32_t sampleInputEnergy_mJ(uint16_t const current_ma,
+                                     uint16_t const samplePeriod_ms);
 static uint16_t recordGraphCurrent(uint16_t const current_ma, uint32_t const currentTime);
 static void beginCasePerformance(uint32_t const currentTime);
 static void recordCasePerformance(uint16_t const current_ma, uint32_t const currentTime);
@@ -2452,6 +2457,8 @@ static void r4SendWifiStatus(WiFiClient &client, int16_t const temperature,
   else client.print(F("null"));
   client.print(F(",\"energy_efficiency_pct\":"));
   client.print(ANALYSIS_ENERGY_EFFICIENCY_PERCENT);
+  client.print(F(",\"supply_voltage_mV\":"));
+  client.print(ANALYSIS_SUPPLY_VOLTAGE_MV);
   client.print(F(",\"peak_a\":"));
   if(graphAvailable)
   {
@@ -2641,6 +2648,10 @@ static void r4SendWifiHistory(WiFiClient &client)
   client.print(g_R4WifiHistoryCount);
   client.print(F(",\"capacity\":"));
   client.print(WIFI_HISTORY_RECORD_COUNT);
+  client.print(F(",\"energy_efficiency_pct\":"));
+  client.print(ANALYSIS_ENERGY_EFFICIENCY_PERCENT);
+  client.print(F(",\"supply_voltage_mV\":"));
+  client.print(ANALYSIS_SUPPLY_VOLTAGE_MV);
   client.print(F(",\"records\":["));
   for(uint8_t offset = 0; offset < g_R4WifiHistoryCount; offset++)
   {
@@ -2733,7 +2744,7 @@ static void r4SendWifiHistoryCsv(WiFiClient &client, uint16_t const id)
   client.println(F("Cache-Control: no-store"));
   client.println(F("Connection: close"));
   client.println();
-  client.println(F("id,reason,profile,elapsed_ms,input_energy_mJ,estimated_energy_mJ,efficiency_pct,peak_mA,match_pct,sample_t_ms,current_mA"));
+  client.println(F("id,reason,profile,elapsed_ms,input_energy_mJ,estimated_energy_mJ,efficiency_pct,supply_voltage_mV,peak_mA,match_pct,sample_t_ms,current_mA"));
   for(uint8_t sample = 0; sample < record->graphCount; sample++)
   {
     client.print(record->id);
@@ -2749,6 +2760,8 @@ static void r4SendWifiHistoryCsv(WiFiClient &client, uint16_t const id)
     client.print(estimatedEnergy_mJ(record->inputEnergy_mJ));
     client.write(',');
     client.print(ANALYSIS_ENERGY_EFFICIENCY_PERCENT);
+    client.write(',');
+    client.print(ANALYSIS_SUPPLY_VOLTAGE_MV);
     client.write(',');
     client.print(record->peakCurrent_ma);
     client.write(',');
@@ -4100,10 +4113,8 @@ void loop()
         g_RunSafety.annealingCurrentSamples = 0;
         g_RunSafety.restartCurrentTotal_ma = 0;
         g_RunSafety.restartCurrentSamples = 0;
-        g_AdaptiveAnneal.energyCurrentSumTarget =
-          (((uint32_t)g_UserSettings.targetEnergy_J * 250000UL) +
-           ((3UL * ANALYSIS_ENERGY_EFFICIENCY_PERCENT) - 1UL)) /
-          (3UL * ANALYSIS_ENERGY_EFFICIENCY_PERCENT);
+        g_AdaptiveAnneal.inputEnergy_mJ = 0;
+        g_AdaptiveAnneal.lastEnergySampleTime = currentTime;
         g_AdaptiveAnneal.peakCurrent_ma = 0;
         g_AdaptiveAnneal.belowPeakSamples = 0;
         g_CasePerformance.currentCycleCompared = false;
@@ -4138,6 +4149,14 @@ void loop()
         psuCurrent_ma = readPsuCurrent_ma();
         g_RunSafety.restartCurrentTotal_ma += psuCurrent_ma;
         g_RunSafety.restartCurrentSamples++;
+        if(g_UserSettings.stopType == PROFILE_STOP_ENERGY)
+        {
+          uint16_t const samplePeriod_ms =
+            currentTime - g_AdaptiveAnneal.lastEnergySampleTime;
+          g_AdaptiveAnneal.lastEnergySampleTime = currentTime;
+          g_AdaptiveAnneal.inputEnergy_mJ +=
+            sampleInputEnergy_mJ(psuCurrent_ma, samplePeriod_ms);
+        }
         if(psuCurrent_ma >= PSU_OVERCURRENT) //overloaded the PSU - may damage the ZVS converter
         {
           turnAnnealerOff();
@@ -4165,7 +4184,6 @@ void loop()
           recordGraphCurrent(psuCurrent_ma, currentTime);
         }
         #endif
-
         if(g_UserSettings.stopType != PROFILE_STOP_TIME)
         {
           if(psuCurrent_ma > g_AdaptiveAnneal.peakCurrent_ma)
@@ -4175,8 +4193,9 @@ void loop()
 
           if(g_UserSettings.stopType == PROFILE_STOP_ENERGY)
           {
-            stopConditionReached = g_RunSafety.restartCurrentTotal_ma >=
-                                   g_AdaptiveAnneal.energyCurrentSumTarget;
+            stopConditionReached =
+              estimatedEnergy_mJ(g_AdaptiveAnneal.inputEnergy_mJ) >=
+              (uint32_t)g_UserSettings.targetEnergy_J * 1000UL;
           }
           else if(hasTimeElapsed(SystemTimeTarget - g_UserSettings.annealTime_ms + MIN_ANNEAL_TIME, currentTime) &&
                   g_AdaptiveAnneal.peakCurrent_ma > CURRENT_SENSOR_DETECTION_MA)
@@ -5465,8 +5484,7 @@ static uint16_t recordGraphCurrent(uint16_t const current_ma, uint32_t const cur
   {
     elapsed_ms = ANALYSIS_DURATION_MS - 1;
   }
-  g_Analysis.inputEnergy_mJ +=
-    (uint32_t)current_ma * samplePeriod_ms * ANALYSIS_SUPPLY_VOLTAGE_V / 1000UL;
+  g_Analysis.inputEnergy_mJ += sampleInputEnergy_mJ(current_ma, samplePeriod_ms);
   if(current_ma > g_Analysis.peakCurrent_ma)
   {
     g_Analysis.peakCurrent_ma = current_ma;
@@ -5493,6 +5511,17 @@ static uint16_t recordGraphCurrent(uint16_t const current_ma, uint32_t const cur
     g_Analysis.graphCurrentTotal_ma / g_Analysis.graphCurrentSamples;
   g_Analysis.graphSamples[column] = graphSampleFromCurrent(g_Analysis.graphCurrent_ma);
   return samplePeriod_ms;
+}
+
+/*---------------------------------------------------------------------------*/
+/*! @brief      Integrate one current sample using the configured supply rail.
+*//*-------------------------------------------------------------------------*/
+static uint32_t sampleInputEnergy_mJ(uint16_t const current_ma,
+                                     uint16_t const samplePeriod_ms)
+{
+  uint32_t const inputPower_mW =
+    ((uint32_t)current_ma * ANALYSIS_SUPPLY_VOLTAGE_MV + 500UL) / 1000UL;
+  return (inputPower_mW * samplePeriod_ms + 500UL) / 1000UL;
 }
 
 /*---------------------------------------------------------------------------*/
@@ -5603,8 +5632,7 @@ static void recordCasePerformance(uint16_t const current_ma,
   g_CasePerformance.referenceTotal +=
     (uint32_t)referenceValue * samplePeriod_ms;
   g_CasePerformance.referenceEnergy_mJ +=
-    (uint32_t)referenceCurrent_ma * samplePeriod_ms *
-    ANALYSIS_SUPPLY_VOLTAGE_V / 1000UL;
+    sampleInputEnergy_mJ(referenceCurrent_ma, samplePeriod_ms);
   if(referenceCurrent_ma > g_CasePerformance.referencePeakCurrent_ma)
   {
     g_CasePerformance.referencePeakCurrent_ma = referenceCurrent_ma;
