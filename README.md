@@ -22,8 +22,8 @@ The OLED screen retains its original layout: anneal time on the left;
 fan state, operating mode, case count, and temperature on the right.
 
 Press MODE to move through `TIME`, `MODE`, `SETTINGS`, `PROFILES`, `ANALYSE`,
-`INFO`, and `DIAGNOSTICS`; press UP to open the highlighted menu. Representative
-home screens are shown below.
+`LAST CASE`, `INFO`, and `DIAGNOSTICS`; press UP to open the highlighted menu.
+Representative home screens are shown below.
 
 | TIME | MODE | SETTINGS | PROFILES |
 | --- | --- | --- | --- |
@@ -124,13 +124,14 @@ recreate their names, settings and Analyse references after upgrading. Global
 RESTART/DUMP settings and R4 WiFi credentials are unaffected.
 
 Opening a profile defaults to `LOAD >`; `SAVE`, `RENAME`, and confirmed
-`DELETE` operations display a brief acknowledgement. `PERFORMANCE >` shows the
-saved reference curve before a comparison case exists, or overlays the latest
-comparison case and displays its curve-match and energy percentages.
+`DELETE` operations display a brief acknowledgement. `REFERENCE >` shows only
+the profile's saved Analyse reference, peak current and estimated energy. Actual
+normal-case graphs are reviewed consistently through the home `LAST CASE >`
+item.
 
-| Profile selector | LOAD action | PERFORMANCE action |
-| --- | --- | --- |
-| ![Profile 1 selector](docs/screenshots/profiles-selector.png) | ![Profile actions with LOAD selected](docs/screenshots/profile-actions-load.png) | ![Profile actions with PERFORMANCE selected](docs/screenshots/profile-actions-performance.png) |
+| Profile selector | LOAD action |
+| --- | --- |
+| ![Profile 1 selector](docs/screenshots/profiles-selector.png) | ![Profile actions with LOAD selected](docs/screenshots/profile-actions-load.png) |
 
 ## Analyse mode
 
@@ -164,21 +165,27 @@ stop rule, its target or maximum time, and the destination profile. An ENERGY
 target is the same 80% estimate shown as `~J` on the graph. Saving writes a
 64-sample reference plus peak current, estimated energy, duration, and checksum
 to that profile. The Analyse working copy is then cleared so the saved curve is
-reviewed through the profile's `PERFORMANCE >` action instead of appearing in
-two menus.
+reviewed through the profile's `REFERENCE >` action instead of appearing in two
+menus.
 
 Loading a profile with a saved reference compares subsequent normal cases with
 that curve. During annealing the dotted reference and solid current-case trace
 are shown together. The completed comparison remains visible during the normal
 drop and, in auto-feed mode, during the existing reload countdown without
 adding delays. The footer shows values such as `M94% E103% NEXT 1.8s`; the
-latest case remains available under PERFORMANCE until another comparison or
-analysis replaces it. Match results are observational: the selected TIME,
+latest normal case remains available under `LAST CASE >` until another normal
+case or Analyse capture replaces it. Match results are observational: the selected TIME,
 ENERGY, or PEAK DROP rule still determines when annealing stops.
 
-| Auto-feed reload | Countdown completion | PERFORMANCE review |
-| --- | --- | --- |
-| ![Performance comparison during auto-feed reload](docs/screenshots/performance-next.png) | ![Performance countdown reaching zero](docs/screenshots/performance-next-complete.png) | ![Retained profile performance result](docs/screenshots/performance-result.png) |
+| Auto-feed reload | Countdown completion |
+| --- | --- |
+| ![Performance comparison during auto-feed reload](docs/screenshots/performance-next.png) | ![Performance countdown reaching zero](docs/screenshots/performance-next-complete.png) |
+
+Every normal run with a detected current sensor captures its current graph,
+including one-shot and free-run cases without a profile reference. `LAST CASE >`
+shows the latest trace with peak current and estimated `~J`; a loaded reference
+is overlaid as a dotted line. The buffer is session-only and is replaced by the
+next normal case or Analyse capture.
 
 Holding MODE for at least 300 ms during an analysis is the manual safety abort.
 It immediately turns the annealing output off and opens the drop gate for five
@@ -402,6 +409,8 @@ SW version 4.2.0
   supply value instead of an implicit 48 V stop-rule factor.
 - Invalidated profiles and Analyse references saved by earlier firmware so raw
   and estimated ENERGY targets cannot be confused.
+- Added universal current-graph capture and a home `LAST CASE >` review screen;
+  renamed profile `PERFORMANCE >` to `REFERENCE >` so it shows saved data only.
 - Added visible WiFi monitor and setup controls under Settings.
 - Added persistent LAN credentials, automatic reconnect and setup-AP fallback.
 - Added WiFi connection state and IP address to Info while preserving the

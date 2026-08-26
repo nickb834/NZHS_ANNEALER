@@ -135,8 +135,8 @@ in [R4_WIFI_MONITOR.md](R4_WIFI_MONITOR.md).
 
 ## Controls and menus
 
-- Check TIME → MODE → SETTINGS → PROFILES → ANALYSE → INFO → DIAGNOSTICS → TIME
-  navigation on the stopped screen.
+- Check TIME → MODE → SETTINGS → PROFILES → ANALYSE → LAST CASE → INFO →
+  DIAGNOSTICS → TIME navigation on the stopped screen.
 - Confirm UP opens each selected menu and every `BACK >` returns to the
   originating stopped-screen item.
 - Confirm INFO scrolls with MODE and returns with UP.
@@ -204,9 +204,9 @@ in [R4_WIFI_MONITOR.md](R4_WIFI_MONITOR.md).
 - Configure PEAK DROP across its percentage range and verify the separate MAX
   TIME safety limit is stored and enforced.
 - Select every profile destination, save, and confirm the Analyse working copy
-  is removed while the saved reference remains under profile PERFORMANCE.
+  is removed while the saved reference remains under profile REFERENCE.
 
-## Profile references and performance
+## Profile references and last-case review
 
 - Upgrade from an earlier profile-format build and confirm all eight profiles
   and saved Analyse references appear empty while global RESTART/DUMP and R4
@@ -214,7 +214,7 @@ in [R4_WIFI_MONITOR.md](R4_WIFI_MONITOR.md).
 - Confirm every profile action list opens on LOAD, including an empty slot.
 - Confirm valid LOAD shows `LOADED` then returns to TIME; empty LOAD shows
   `EMPTY`; SAVE and confirmed DELETE show their corresponding acknowledgement.
-- Select PERFORMANCE before saving a reference and confirm `NO DATA`.
+- Select REFERENCE before saving a reference and confirm `NO DATA`.
 - Save an Analyse reference, power-cycle, reload the profile, and confirm its
   reference graph, peak current and estimated `~J` persist.
 - Delete that profile and confirm its reference is invalidated.
@@ -228,9 +228,17 @@ in [R4_WIFI_MONITOR.md](R4_WIFI_MONITOR.md).
 - In auto-feed, confirm it remains visible during reload with a live
   `NEXT 2.0s` to `NEXT 0.1s` countdown and no added feeder delay.
 - In free-run, confirm the normal manual LOAD countdown remains visible. In
-  single-shot, confirm the latest result remains available under PERFORMANCE.
+  single-shot, confirm the latest result remains available under LAST CASE.
+- Without loading a reference, complete TIME, ENERGY and PEAK DROP cases in
+  single-shot, free-run and auto-feed. Confirm each latest graph is available
+  under LAST CASE with peak current and estimated `~J`.
+- With a loaded reference, confirm LAST CASE overlays the dotted reference while
+  profile REFERENCE continues to show only the saved curve and aggregate values.
+- Open LAST CASE before any normal capture and confirm `NO DATA`; press UP and
+  confirm it returns to the LAST CASE home selection.
 - From the second case, confirm a no-current/low-current safety fault takes
-  precedence over performance reporting and prevents the gate opening.
+  precedence over comparison reporting and prevents the gate opening while the
+  captured fault trace remains available under LAST CASE.
 
 ## Profiles, information, and stability
 

@@ -158,7 +158,8 @@ static const char TEXT_DIAGNOSTICS_ITEM[] PROGMEM = "DIAGNOSTICS>";
 static const char TEXT_BACK_ITEM[] PROGMEM = "BACK >";
 static const char TEXT_SAVE_ITEM[] PROGMEM = "SAVE >";
 static const char TEXT_LOAD_ITEM[] PROGMEM = "LOAD >";
-static const char TEXT_PERFORMANCE_ITEM[] PROGMEM = "PERFORMANCE >";
+static const char TEXT_REFERENCE_ITEM[] PROGMEM = "REFERENCE >";
+static const char TEXT_LAST_CASE_ITEM[] PROGMEM = "LAST CASE >";
 static const char TEXT_RENAME_ITEM[] PROGMEM = "RENAME >";
 static const char TEXT_DELETE_ITEM[] PROGMEM = "DELETE >";
 static const char TEXT_NEW_ITEM[] PROGMEM = "NEW >";
@@ -171,11 +172,11 @@ static const char TEXT_ESTIMATED_ENERGY[] PROGMEM = ",estimated_energy_J=";
 static const char TEXT_ENERGY_EFFICIENCY[] PROGMEM = ",efficiency_pct=";
 static const char * const PROFILE_ACTION_TEXT[] PROGMEM = {
   TEXT_LOAD_ITEM, TEXT_SAVE_ITEM, TEXT_RENAME_ITEM, TEXT_DELETE_ITEM,
-  TEXT_PERFORMANCE_ITEM, TEXT_BACK_ITEM
+  TEXT_REFERENCE_ITEM, TEXT_BACK_ITEM
 };
 static const char * const STOPPED_MENU_TEXT[] PROGMEM = {
-  TEXT_SETTINGS_ITEM, TEXT_PROFILES_ITEM, TEXT_ANALYSE_ITEM, TEXT_INFO_ITEM,
-  TEXT_DIAGNOSTICS_ITEM
+  TEXT_SETTINGS_ITEM, TEXT_PROFILES_ITEM, TEXT_ANALYSE_ITEM, TEXT_LAST_CASE_ITEM,
+  TEXT_INFO_ITEM, TEXT_DIAGNOSTICS_ITEM
 };
 
 // Exact glyph columns from the Adafruit GFX classic fixed-space font. The
@@ -513,7 +514,8 @@ typedef enum tStateMachineStates : uint8_t
   STATE_SETTINGS,
   STATE_PROFILES,
   STATE_PROFILE_ACTIONS,
-  STATE_PROFILE_PERFORMANCE,
+  STATE_PROFILE_REFERENCE,
+  STATE_LAST_CASE,
   STATE_PROFILE_NAME_EDIT,
   STATE_PROFILE_DELETE_CONFIRM,
   STATE_PROFILE_NOTICE,
@@ -554,6 +556,7 @@ typedef enum tStoppedScreenSelection : uint8_t
   STOPPED_SCREEN_SETTINGS,
   STOPPED_SCREEN_PROFILES,
   STOPPED_SCREEN_ANALYSE,
+  STOPPED_SCREEN_LAST_CASE,
   STOPPED_SCREEN_INFO,
   STOPPED_SCREEN_DIAGNOSTICS,
   STOPPED_SCREEN_SELECTION_COUNT,
@@ -648,7 +651,7 @@ typedef enum tProfileActionSelection : uint8_t
   PROFILE_ACTION_SAVE,
   PROFILE_ACTION_RENAME,
   PROFILE_ACTION_DELETE,
-  PROFILE_ACTION_PERFORMANCE,
+  PROFILE_ACTION_REFERENCE,
   PROFILE_ACTION_BACK,
   PROFILE_ACTION_SELECTION_COUNT,
 } tProfileActionSelection;
@@ -665,7 +668,6 @@ typedef enum tProfileNotice : uint8_t
 typedef enum tPerformanceFooter : uint8_t
 {
   PERFORMANCE_FOOTER_LIVE = 0,
-  PERFORMANCE_FOOTER_REVIEW,
   PERFORMANCE_FOOTER_DROP,
   PERFORMANCE_FOOTER_NEXT,
 } tPerformanceFooter;
@@ -797,8 +799,6 @@ typedef struct tAnalysisConfigState
 
 typedef struct tAdaptiveAnnealState
 {
-  uint32_t inputEnergy_mJ;
-  uint32_t lastEnergySampleTime;
   uint16_t peakCurrent_ma;
   uint8_t belowPeakSamples;
 } tAdaptiveAnnealState;
@@ -1211,6 +1211,7 @@ static uint16_t recordGraphCurrent(uint16_t const current_ma, uint32_t const cur
 static void beginCasePerformance(uint32_t const currentTime);
 static void recordCasePerformance(uint16_t const current_ma, uint32_t const currentTime);
 static void finishCasePerformance(void);
+static void finishNormalCaseCapture(void);
 static void drawAnalysisMenuScreen(void);
 static void drawAnalysisConfigScreen(void);
 static void setTextSelected(bool const selected) __attribute__((noinline));
@@ -1264,8 +1265,8 @@ static void drawWifiResetScreen(void);
 #endif
 static void drawProfilesScreen(void);
 static void drawProfileActionsScreen(void);
-static void drawProfilePerformanceScreen(void);
 static void drawProfileReferenceScreen(void);
+static void drawLastCaseScreen(void);
 static void drawProfileNameEditScreen(void);
 static void drawProfileDeleteConfirmScreen(void);
 static void drawProfileNoticeScreen(void);
@@ -2265,7 +2266,8 @@ static char const * r4WifiStateName(tStateMachineStates const state)
     case STATE_SETTINGS: return "SETTINGS";
     case STATE_PROFILES: return "PROFILES";
     case STATE_PROFILE_ACTIONS: return "PROFILE";
-    case STATE_PROFILE_PERFORMANCE: return "PERFORMANCE";
+    case STATE_PROFILE_REFERENCE: return "REFERENCE";
+    case STATE_LAST_CASE: return "LAST CASE";
     case STATE_PROFILE_NAME_EDIT: return "RENAME";
     case STATE_PROFILE_DELETE_CONFIRM: return "DELETE";
     case STATE_PROFILE_NOTICE: return "PROFILE NOTICE";
@@ -2614,24 +2616,10 @@ static void r4StoreWifiHistory(tWifiHistoryReason const reason,
 *//*-------------------------------------------------------------------------*/
 static void r4FinishAnnealHistory(tWifiHistoryReason const reason)
 {
-  bool const hasCapture =
-    (g_CasePerformance.referenceValid && CurrentSensorPresent) ||
-    g_R4WifiHistoryCaptureActive;
-  if(!hasCapture)
+  if(!g_CasePerformance.currentCycleCompared &&
+     !g_R4WifiHistoryCaptureActive)
   {
     return;
-  }
-  if(g_CasePerformance.referenceValid && CurrentSensorPresent)
-  {
-    if(!g_CasePerformance.currentCycleCompared)
-    {
-      finishCasePerformance();
-    }
-  }
-  else if(g_R4WifiHistoryCaptureActive)
-  {
-    r4FinalizeGraphCapture();
-    g_Analysis.graphIsAnalysis = false;
   }
   r4StoreWifiHistory(reason, false,
                      g_CasePerformance.currentCycleCompared);
@@ -3387,15 +3375,7 @@ void loop()
 
   // DS18B20 conversion takes longer than the 25 ms analysis sampler.
   if(g_SystemState != STATE_ANALYSING &&
-     !(g_SystemState == STATE_ANNEALING &&
-       (g_UserSettings.stopType != PROFILE_STOP_TIME ||
-        (g_CasePerformance.referenceValid && CurrentSensorPresent)
-        #if NZHS_HAS_WIFI
-        || ((g_R4WifiConfig.monitorEnabled ||
-             g_R4WifiMode == R4_WIFI_DIRECT_MONITOR) &&
-            CurrentSensorPresent)
-        #endif
-        )))
+     !(g_SystemState == STATE_ANNEALING && CurrentSensorPresent))
   {
     temperature = readTemperature();
   }
@@ -3488,7 +3468,8 @@ void loop()
     else if(g_SystemState == STATE_SETTINGS ||
             g_SystemState == STATE_PROFILES ||
             g_SystemState == STATE_PROFILE_ACTIONS ||
-            g_SystemState == STATE_PROFILE_PERFORMANCE ||
+            g_SystemState == STATE_PROFILE_REFERENCE ||
+            g_SystemState == STATE_LAST_CASE ||
             g_SystemState == STATE_PROFILE_NAME_EDIT ||
             g_SystemState == STATE_PROFILE_DELETE_CONFIRM ||
             g_SystemState == STATE_PROFILE_NOTICE ||
@@ -3601,7 +3582,8 @@ void loop()
       {
         advanceProfileActionSelection();
       }
-      else if(g_SystemState == STATE_PROFILE_PERFORMANCE)
+      else if(g_SystemState == STATE_PROFILE_REFERENCE ||
+              g_SystemState == STATE_LAST_CASE)
       {
         // The result screen has one visible BACK > action operated by UP.
       }
@@ -3832,11 +3814,11 @@ void loop()
           }
           updateSystemState(STATE_PROFILE_NOTICE);
         }
-        else if(g_UserSettings.profileActionSelection == PROFILE_ACTION_PERFORMANCE)
+        else if(g_UserSettings.profileActionSelection == PROFILE_ACTION_REFERENCE)
         {
           if(isProfileReferenceValid(g_UserSettings.profileSlot))
           {
-            updateSystemState(STATE_PROFILE_PERFORMANCE);
+            updateSystemState(STATE_PROFILE_REFERENCE);
           }
           else
           {
@@ -3880,7 +3862,7 @@ void loop()
     }
     break;
 
-    case STATE_PROFILE_PERFORMANCE:
+    case STATE_PROFILE_REFERENCE:
     {
       updateSystemState(g_SystemState);
       if(upKey && !upKeyPrev)
@@ -3888,7 +3870,19 @@ void loop()
         updateSystemState(STATE_PROFILE_ACTIONS);
         break;
       }
-      drawProfilePerformanceScreen();
+      drawProfileReferenceScreen();
+    }
+    break;
+
+    case STATE_LAST_CASE:
+    {
+      updateSystemState(g_SystemState);
+      if(upKey && !upKeyPrev)
+      {
+        returnToStoppedScreen();
+        break;
+      }
+      drawLastCaseScreen();
     }
     break;
 
@@ -3966,7 +3960,7 @@ void loop()
         {
           g_AnalysisConfig.profileSaveInProgress = false;
           g_UserSettings.analysisMenuSelection = ANALYSIS_MENU_NEW;
-          g_UserSettings.profileActionSelection = PROFILE_ACTION_PERFORMANCE;
+          g_UserSettings.profileActionSelection = PROFILE_ACTION_REFERENCE;
           updateSystemState(STATE_PROFILE_ACTIONS);
         }
         else if(g_ProfileNotice == PROFILE_NOTICE_LOADED)
@@ -4113,8 +4107,6 @@ void loop()
         g_RunSafety.annealingCurrentSamples = 0;
         g_RunSafety.restartCurrentTotal_ma = 0;
         g_RunSafety.restartCurrentSamples = 0;
-        g_AdaptiveAnneal.inputEnergy_mJ = 0;
-        g_AdaptiveAnneal.lastEnergySampleTime = currentTime;
         g_AdaptiveAnneal.peakCurrent_ma = 0;
         g_AdaptiveAnneal.belowPeakSamples = 0;
         g_CasePerformance.currentCycleCompared = false;
@@ -4133,6 +4125,15 @@ void loop()
         {
           beginCasePerformance(currentTime);
         }
+        else if(CurrentSensorPresent)
+        {
+          #if NZHS_HAS_WIFI
+          if(!g_R4WifiHistoryCaptureActive)
+          #endif
+          {
+            resetGraphCapture(currentTime, false);
+          }
+        }
         targetTimeoutPending = false;
         turnStartStopLedOn();
         turnAnnealerOn();
@@ -4149,23 +4150,16 @@ void loop()
         psuCurrent_ma = readPsuCurrent_ma();
         g_RunSafety.restartCurrentTotal_ma += psuCurrent_ma;
         g_RunSafety.restartCurrentSamples++;
-        if(g_UserSettings.stopType == PROFILE_STOP_ENERGY)
-        {
-          uint16_t const samplePeriod_ms =
-            currentTime - g_AdaptiveAnneal.lastEnergySampleTime;
-          g_AdaptiveAnneal.lastEnergySampleTime = currentTime;
-          g_AdaptiveAnneal.inputEnergy_mJ +=
-            sampleInputEnergy_mJ(psuCurrent_ma, samplePeriod_ms);
-        }
         if(psuCurrent_ma >= PSU_OVERCURRENT) //overloaded the PSU - may damage the ZVS converter
         {
           turnAnnealerOff();
           turnStartStopLedOff();
-          #if NZHS_HAS_WIFI
           if(g_CasePerformance.referenceValid)
             recordCasePerformance(psuCurrent_ma, currentTime);
-          else if(g_R4WifiHistoryCaptureActive)
+          else
             recordGraphCurrent(psuCurrent_ma, currentTime);
+          finishNormalCaseCapture();
+          #if NZHS_HAS_WIFI
           r4FinishAnnealHistory(WIFI_HISTORY_OVERCURRENT);
           #endif
           updateSystemState(STATE_OVERCURRENT_WARNING);
@@ -4184,6 +4178,10 @@ void loop()
           recordGraphCurrent(psuCurrent_ma, currentTime);
         }
         #endif
+        else
+        {
+          recordGraphCurrent(psuCurrent_ma, currentTime);
+        }
         if(g_UserSettings.stopType != PROFILE_STOP_TIME)
         {
           if(psuCurrent_ma > g_AdaptiveAnneal.peakCurrent_ma)
@@ -4194,7 +4192,7 @@ void loop()
           if(g_UserSettings.stopType == PROFILE_STOP_ENERGY)
           {
             stopConditionReached =
-              estimatedEnergy_mJ(g_AdaptiveAnneal.inputEnergy_mJ) >=
+              estimatedEnergy_mJ(g_Analysis.inputEnergy_mJ) >=
               (uint32_t)g_UserSettings.targetEnergy_J * 1000UL;
           }
           else if(hasTimeElapsed(SystemTimeTarget - g_UserSettings.annealTime_ms + MIN_ANNEAL_TIME, currentTime) &&
@@ -4247,6 +4245,7 @@ void loop()
             EEPROM.update(EEPROM_ADDRESS_AUTO_RESTART, 0);
             g_RunSafety.cooldownRestartPending = false;
             turnStartStopLedOff();
+            finishNormalCaseCapture();
             #if NZHS_HAS_WIFI
             r4FinishAnnealHistory(WIFI_HISTORY_LOW_CURRENT);
             #endif
@@ -4261,12 +4260,17 @@ void loop()
           if(lowCurrentGuardFault(cycleAverageCurrent_ma))
           {
             turnStartStopLedOff();
+            finishNormalCaseCapture();
             #if NZHS_HAS_WIFI
             r4FinishAnnealHistory(WIFI_HISTORY_LOW_CURRENT);
             #endif
             updateSystemState(STATE_LOW_CURRENT_WARNING);
             break;
           }
+        }
+        if(CurrentSensorPresent)
+        {
+          finishNormalCaseCapture();
         }
         #if NZHS_HAS_WIFI
         tWifiHistoryReason historyReason = WIFI_HISTORY_TIME;
@@ -4276,11 +4280,6 @@ void loop()
         else if(g_UserSettings.stopType == PROFILE_STOP_PEAK_DROP)
           historyReason = WIFI_HISTORY_PEAK_DROP;
         r4FinishAnnealHistory(historyReason);
-        #else
-          if(g_CasePerformance.referenceValid && CurrentSensorPresent)
-          {
-            finishCasePerformance();
-          }
         #endif
         g_RunSafety.completedAnnealCycles++;
         openDropGate();
@@ -4301,6 +4300,13 @@ void loop()
           }
           break;
         }
+        if(CurrentSensorPresent &&
+           !hasTimeElapsed(g_Analysis.lastGraphDrawTime +
+                           ANALYSIS_GRAPH_REFRESH_MS, currentTime))
+        {
+          break;
+        }
+        g_Analysis.lastGraphDrawTime = currentTime;
         uint32_t remainingTime = systemTimeTarget - currentTime;
         display.clearDisplay();
         display.setTextSize(2);
@@ -4338,7 +4344,7 @@ void loop()
 
       if (!hasTimeElapsed(SystemTimeTarget, millis())) // wait time is not up, break.
       {
-        if(g_CasePerformance.currentCycleCompared)
+        if(g_Analysis.graphValid && !g_Analysis.graphIsAnalysis)
         {
           drawCasePerformanceGraph(PERFORMANCE_FOOTER_DROP, 0);
           break;
@@ -4437,7 +4443,7 @@ void loop()
       {
         uint32_t remainingTime = systemTimeTarget - currentTime;
         if(CurrentMode == MODE_AUTOMATIC &&
-           g_CasePerformance.currentCycleCompared)
+           g_Analysis.graphValid && !g_Analysis.graphIsAnalysis)
         {
           drawCasePerformanceGraph(PERFORMANCE_FOOTER_NEXT,
                                    remainingTime > UINT16_MAX ? UINT16_MAX : remainingTime);
@@ -4693,15 +4699,7 @@ void loop()
 
   bool const fastCurrentSampling = g_SystemState == STATE_ANALYSING ||
                                    (g_SystemState == STATE_ANNEALING &&
-                                    (g_UserSettings.stopType != PROFILE_STOP_TIME ||
-                                     (g_CasePerformance.referenceValid &&
-                                      CurrentSensorPresent)
-                                     #if NZHS_HAS_WIFI
-                                     || ((g_R4WifiConfig.monitorEnabled ||
-                                          g_R4WifiMode == R4_WIFI_DIRECT_MONITOR) &&
-                                         CurrentSensorPresent)
-                                     #endif
-                                     ));
+                                    CurrentSensorPresent);
   uint32_t const loopPeriod = fastCurrentSampling ? ANALYSIS_SAMPLE_PERIOD_MS : LOOP_TIME;
   while(!hasTimeElapsed(LoopStartTime + loopPeriod, millis())) // wait for the loop time to expire
   {
@@ -5690,6 +5688,29 @@ static void finishCasePerformance(void)
 }
 
 /*---------------------------------------------------------------------------*/
+/*! @brief      Retain the latest normal case with optional reference metrics.
+*//*-------------------------------------------------------------------------*/
+static void finishNormalCaseCapture(void)
+{
+  if(g_CasePerformance.referenceValid)
+  {
+    if(!g_CasePerformance.currentCycleCompared)
+    {
+      finishCasePerformance();
+    }
+    return;
+  }
+  g_Analysis.elapsedTime_ms = millis() - g_Analysis.startTime;
+  if(g_Analysis.elapsedTime_ms > ANALYSIS_DURATION_MS)
+  {
+    g_Analysis.elapsedTime_ms = ANALYSIS_DURATION_MS;
+  }
+  g_Analysis.graphValid = g_Analysis.graphColumn != UINT8_MAX;
+  g_Analysis.graphIsAnalysis = false;
+  g_CasePerformance.currentCycleCompared = false;
+}
+
+/*---------------------------------------------------------------------------*/
 /*! @brief      Finish analysis and publish its aggregate values to serial.
 *//*-------------------------------------------------------------------------*/
 static void finishAnalysis(bool const aborted)
@@ -5827,6 +5848,10 @@ static void updateStoppedScreenSetting(bool const rapidTimeAdjust)
   else if(g_UserSettings.stoppedScreenSelection == STOPPED_SCREEN_ANALYSE)
   {
     enterAnalysis();
+  }
+  else if(g_UserSettings.stoppedScreenSelection == STOPPED_SCREEN_LAST_CASE)
+  {
+    updateSystemState(STATE_LAST_CASE);
   }
   else if(g_UserSettings.stoppedScreenSelection == STOPPED_SCREEN_SETTINGS)
   {
@@ -6276,7 +6301,7 @@ static void drawAnalysisGraph(void)
 static void drawCasePerformanceGraph(tPerformanceFooter const footer,
                                      uint16_t const remainingTime_ms)
 {
-  drawCapturedGraph(true);
+  drawCapturedGraph(g_CasePerformance.currentCycleCompared);
   if(footer == PERFORMANCE_FOOTER_LIVE)
   {
     drawGraphMeasurements();
@@ -6287,40 +6312,30 @@ static void drawCasePerformanceGraph(tPerformanceFooter const footer,
   display.fillRect(0, 24, SCREEN_WIDTH, 8, BLACK);
   display.setTextSize(1);
   display.setTextColor(WHITE);
-  if(footer == PERFORMANCE_FOOTER_REVIEW)
+  display.setCursor(0, 24);
+  if(g_CasePerformance.currentCycleCompared)
   {
-    display.setCursor(0, 24);
-    display.setTextColor(BLACK, WHITE);
-    display.print(FPSTR(TEXT_BACK_ITEM));
-    display.setTextColor(WHITE);
-    display.setCursor(42, 24);
-    display.write('M');
-    display.print(g_CasePerformance.matchPercent);
-    display.write('%');
-    display.setCursor(78, 24);
-    display.write('E');
-    display.print(g_CasePerformance.energyPercent);
-    display.write('%');
-  }
-  else
-  {
-    display.setCursor(0, 24);
     display.write('M');
     display.print(g_CasePerformance.matchPercent);
     display.print(F("% E"));
     display.print(g_CasePerformance.energyPercent);
-    if(footer == PERFORMANCE_FOOTER_DROP)
-    {
-      display.print(F("% DROP"));
-    }
-    else
-    {
-      display.print(F("% NEXT "));
-      display.print(remainingTime_ms / 1000);
-      display.write('.');
-      display.print((remainingTime_ms % 1000) / 100);
-      display.write('s');
-    }
+  }
+  else
+  {
+    display.print(F("~J"));
+    display.print(estimatedEnergy_J(g_Analysis.inputEnergy_mJ));
+  }
+  if(footer == PERFORMANCE_FOOTER_DROP)
+  {
+    display.print(g_CasePerformance.currentCycleCompared ? F("% DROP") : F(" DROP"));
+  }
+  else
+  {
+    display.print(g_CasePerformance.currentCycleCompared ? F("% NEXT ") : F(" NEXT "));
+    display.print(remainingTime_ms / 1000);
+    display.write('.');
+    display.print((remainingTime_ms % 1000) / 100);
+    display.write('s');
   }
   display.display();
 }
@@ -6630,23 +6645,7 @@ static void drawProfileActionsScreen(void)
 }
 
 /*---------------------------------------------------------------------------*/
-/*! @brief      Review a profile reference or its latest comparison case.
-*//*-------------------------------------------------------------------------*/
-static void drawProfilePerformanceScreen(void)
-{
-  if(g_Analysis.graphValid && !g_Analysis.graphIsAnalysis &&
-     g_CasePerformance.resultSlot == g_UserSettings.profileSlot)
-  {
-    drawCasePerformanceGraph(PERFORMANCE_FOOTER_REVIEW, 0);
-  }
-  else
-  {
-    drawProfileReferenceScreen();
-  }
-}
-
-/*---------------------------------------------------------------------------*/
-/*! @brief      Review a saved reference before a comparison case exists.
+/*! @brief      Review only the saved reference belonging to this profile.
 *//*-------------------------------------------------------------------------*/
 static void drawProfileReferenceScreen(void)
 {
@@ -6688,6 +6687,29 @@ static void drawProfileReferenceScreen(void)
   display.setCursor(84, 24);
   display.print(F("~J"));
   display.print(energy_J);
+  display.display();
+}
+
+/*---------------------------------------------------------------------------*/
+/*! @brief      Review the latest completed normal case, if one is retained.
+*//*-------------------------------------------------------------------------*/
+static void drawLastCaseScreen(void)
+{
+  if(g_Analysis.graphValid && !g_Analysis.graphIsAnalysis)
+  {
+    drawCapturedGraph(g_CasePerformance.currentCycleCompared);
+    drawAnalysisStatus(false);
+    return;
+  }
+  beginFullWidthScreen();
+  display.setCursor(0, 0);
+  display.print(FPSTR(TEXT_LAST_CASE_ITEM));
+  display.setCursor(0, 8);
+  display.print(F("NO DATA"));
+  display.setCursor(0, 24);
+  display.setTextColor(BLACK, WHITE);
+  display.print(FPSTR(TEXT_BACK_ITEM));
+  display.setTextColor(WHITE);
   display.display();
 }
 
