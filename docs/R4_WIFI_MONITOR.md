@@ -99,8 +99,8 @@ The browser page polls the firmware without reloading and displays:
 
 - state and operating mode;
 - current and capacitor temperature when their sensors are available;
-- accumulated input-energy estimate and peak current when a curve is active or
-  retained;
+- accumulated 80%-efficiency energy estimate and peak current when a curve is
+  active or retained;
 - session case count and current state time remaining;
 - profile number, match percentage and energy percentage when available;
 - cooldown-lock and fault state;
@@ -113,7 +113,7 @@ steps. The browser expands them to the labelled current scale.
 
 The R4 retains the latest 16 completed current traces in RAM, newest first.
 Each row shows its sequence number, stop reason, elapsed time, peak current,
-input-energy estimate and profile match when available. Select the sequence
+estimated energy and profile match when available. Select the sequence
 number to replace the live graph with that retained trace; select **LIVE** to
 resume the current graph. Each row also provides a CSV download containing its
 summary and 0-8 second current samples.
@@ -130,7 +130,8 @@ Records include:
 History is deliberately session-only: it clears on reset and does not write to
 EEPROM. Ordinary timed runs use the existing 25 ms sampler while history is
 enabled, allowing energy and curve data to be retained without changing the
-anneal output deadline.
+anneal output deadline. Status/history JSON and CSV retain raw input energy
+alongside the 80% estimate.
 
 ## HTTP endpoints
 
@@ -144,6 +145,11 @@ anneal output deadline.
 | `/api/history` | Up to 16 retained result summaries as JSON |
 | `/api/history/<id>` | One retained actual/reference graph as JSON |
 | `/history/<id>.csv` | Download one retained trace and summary as CSV |
+
+`/api/status` reports the primary 80% estimate as `energy_j`, raw electrical
+input as `input_energy_j`, and the applied factor as
+`energy_efficiency_pct`. History summaries use explicit `input_energy_mj` and
+`estimated_energy_mj` fields; CSV exports include both plus the factor.
 
 The browser polls status every 500 ms and curves every second. Requests use a
 fixed 1536-byte buffer and bounded per-loop reads; the firmware does not use a

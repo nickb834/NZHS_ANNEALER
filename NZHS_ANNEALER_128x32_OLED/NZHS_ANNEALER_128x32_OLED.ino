@@ -56,6 +56,7 @@
 #define ANALYSIS_DUMP_STATUS_MS 1000UL
 #define ANALYSIS_ABORT_HOLD_MS 300UL
 #define ANALYSIS_SUPPLY_VOLTAGE_V 48UL
+#define ANALYSIS_ENERGY_EFFICIENCY_PERCENT 80U
 #define ANALYSIS_GRAPH_MAX_CURRENT_MA 12500UL
 #define ANALYSIS_GRAPH_CURRENT_STEP_MA 50U
 #define ANALYSIS_GRAPH_MAX_SAMPLE (ANALYSIS_GRAPH_MAX_CURRENT_MA / ANALYSIS_GRAPH_CURRENT_STEP_MA)
@@ -105,13 +106,13 @@
 #define EEPROM_ADDRESS_PROFILE_REFERENCE_BASE 192
 #define PROFILE_COUNT 8
 #define PROFILE_NAME_LENGTH 10
-#define PROFILE_MAGIC 0xC7
+#define PROFILE_MAGIC 0xC8
 #define PROFILE_FLAG_AUTO_RESTART 0x01
 #define PROFILE_FLAG_DUMP_BUTTON 0x02
 #define PROFILE_FLAG_STOP_TYPE_SHIFT 2
 #define PROFILE_FLAG_STOP_TYPE_MASK 0x0C
 #define PROFILE_REFERENCE_SAMPLE_COUNT 64
-#define PROFILE_REFERENCE_MAGIC 0xD6
+#define PROFILE_REFERENCE_MAGIC 0xD7
 #define PROFILE_REFERENCE_SAMPLE_OFFSET 1
 #define PROFILE_REFERENCE_PEAK_OFFSET 65
 #define PROFILE_REFERENCE_ENERGY_OFFSET 67
@@ -166,6 +167,8 @@ static const char TEXT_CONFIG_ITEM[] PROGMEM = "CONFIG >";
 static const char TEXT_ON[] PROGMEM = "ON";
 static const char TEXT_OFF[] PROGMEM = "OFF";
 static const char TEXT_INPUT_ENERGY[] PROGMEM = ",input_energy_J=";
+static const char TEXT_ESTIMATED_ENERGY[] PROGMEM = ",estimated_energy_J=";
+static const char TEXT_ENERGY_EFFICIENCY[] PROGMEM = ",efficiency_pct=";
 static const char * const PROFILE_ACTION_TEXT[] PROGMEM = {
   TEXT_LOAD_ITEM, TEXT_SAVE_ITEM, TEXT_RENAME_ITEM, TEXT_DELETE_ITEM,
   TEXT_PERFORMANCE_ITEM, TEXT_BACK_ITEM
@@ -176,9 +179,9 @@ static const char * const STOPPED_MENU_TEXT[] PROGMEM = {
 };
 
 // Exact glyph columns from the Adafruit GFX classic fixed-space font. The
-// firmware only emits ASCII 32-95, lowercase 's', and its historical degree
-// character (input byte 248 maps to CP437 glyph 249). Each glyph remains the
-// original five columns by eight rows; the renderer supplies column six.
+// firmware only emits ASCII 32-95, lowercase 's', tilde, and its historical
+// degree character (input byte 248 maps to CP437 glyph 249). Each glyph remains
+// the original five columns by eight rows; the renderer supplies column six.
 static const uint8_t annealerFont[] PROGMEM = {
   0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x5F, 0x00, 0x00, 0x00, 0x07, 0x00, 0x07, 0x00,
   0x14, 0x7F, 0x14, 0x7F, 0x14, 0x24, 0x2A, 0x7F, 0x2A, 0x12, 0x23, 0x13, 0x08, 0x64, 0x62,
@@ -206,6 +209,8 @@ static const uint8_t annealerFont[] PROGMEM = {
   0x48, 0x54, 0x54, 0x54, 0x24,
   // Degree symbol as rendered by Adafruit GFX for input byte 248.
   0x00, 0x00, 0x18, 0x18, 0x00,
+  // Tilde from the same classic fixed-space font.
+  0x02, 0x01, 0x02, 0x04, 0x02,
 };
 
 // Minimal fixed 128x32 I2C display implementation. It deliberately preserves
@@ -422,6 +427,10 @@ private:
     if(character == 248)
     {
       return 325;
+    }
+    if(character == '~')
+    {
+      return 330;
     }
     return (uint16_t)('?' - 32) * 5;
   }
@@ -719,6 +728,9 @@ typedef struct tWifiHistoryRecord
 static_assert(EEPROM_ADDRESS_PROFILE_BASE + (PROFILE_COUNT * sizeof(tCartridgeProfile)) <=
               EEPROM_ADDRESS_PROFILE_RULE_BASE,
               "Profile stop rules overlap cartridge profiles");
+static_assert(ANALYSIS_ENERGY_EFFICIENCY_PERCENT > 0 &&
+              ANALYSIS_ENERGY_EFFICIENCY_PERCENT <= 100,
+              "Energy efficiency must be between 1 and 100 percent");
 static_assert(EEPROM_ADDRESS_PROFILE_RULE_BASE + (PROFILE_COUNT * 3) <=
               EEPROM_ADDRESS_PROFILE_REFERENCE_BASE,
               "Profile references overlap profile stop rules");
@@ -1203,6 +1215,8 @@ static void drawAnalysisGraph(void);
 static void drawAnalysisStatus(bool const dumping);
 static void drawCasePerformanceGraph(tPerformanceFooter const footer,
                                      uint16_t const remainingTime_ms);
+static uint32_t estimatedEnergy_mJ(uint32_t const inputEnergy_mJ);
+static uint16_t estimatedEnergy_J(uint32_t const inputEnergy_mJ);
 static void printAnalysisEnergy_J(uint32_t const energy_mJ);
 static void setFreeRunMode(void);
 static void setDumpButtonEnabled(bool const enabled);
@@ -2208,15 +2222,15 @@ static const char R4_WIFI_MONITOR_HTML[] = R"HTML(<!doctype html>
 <title>NZHS Annealer Monitor</title><link rel="icon" href="/favicon.ico"><link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png"><link rel="manifest" href="/manifest.webmanifest"><meta name="theme-color" content="#080b10"><meta name="apple-mobile-web-app-capable" content="yes"><meta name="apple-mobile-web-app-status-bar-style" content="black-translucent"><meta name="apple-mobile-web-app-title" content="Annealer"><style>
 :root{color-scheme:dark;font-family:system-ui,sans-serif}body{margin:0;background:#080b10;color:#edf6ff}main{max-width:900px;margin:auto;padding:18px}.head{display:flex;justify-content:space-between;align-items:baseline;gap:12px}h1{font-size:1.35rem;margin:0}h2{font-size:1.05rem;margin:18px 0 8px}.tag{color:#7fc8ff}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(135px,1fr));gap:10px;margin:16px 0}.card{background:#111a24;border:1px solid #24374a;border-radius:8px;padding:10px}.label{color:#8da4b8;font-size:.72rem;text-transform:uppercase}.value{font-size:1.35rem;margin-top:3px}canvas{width:100%;height:auto;background:#05080c;border:1px solid #24374a;border-radius:8px}.foot{color:#8da4b8;font-size:.8rem;margin-top:10px}.bad{color:#ff847c}.ok{color:#8ce99a}.history{overflow-x:auto;border:1px solid #24374a;border-radius:8px}table{width:100%;border-collapse:collapse;font-size:.82rem}th,td{padding:8px;text-align:left;border-bottom:1px solid #24374a;white-space:nowrap}th{color:#8da4b8}.action{display:inline-block;background:#19344b;color:#edf6ff;border:1px solid #385b78;border-radius:5px;padding:5px 8px;text-decoration:none;font:inherit}
 </style></head><body><main><div class="head"><h1>NZHS Annealer</h1><span class="tag">read-only monitor</span></div>
-<div class="grid"><div class="card"><div class="label">State</div><div class="value" id="state">-</div></div><div class="card"><div class="label">Mode</div><div class="value" id="mode">-</div></div><div class="card"><div class="label">Current</div><div class="value" id="current">-</div></div><div class="card"><div class="label">Temperature</div><div class="value" id="temp">-</div></div><div class="card"><div class="label">Energy</div><div class="value" id="energy">-</div></div><div class="card"><div class="label">Peak</div><div class="value" id="peak">-</div></div><div class="card"><div class="label">Cases</div><div class="value" id="cases">-</div></div><div class="card"><div class="label">Remaining</div><div class="value" id="remaining">-</div></div></div>
-<canvas id="curve" width="800" height="320"></canvas><div class="foot" id="graphmode">LIVE</div><div class="foot" id="detail">Connecting...</div><div class="head"><h2>Session history</h2><button class="action" onclick="live()">LIVE</button></div><div class="history"><table><thead><tr><th>#</th><th>Result</th><th>Time</th><th>Peak</th><th>Energy</th><th>Match</th><th>CSV</th></tr></thead><tbody id="history"><tr><td colspan="7">No retained results</td></tr></tbody></table></div></main><script>
+<div class="grid"><div class="card"><div class="label">State</div><div class="value" id="state">-</div></div><div class="card"><div class="label">Mode</div><div class="value" id="mode">-</div></div><div class="card"><div class="label">Current</div><div class="value" id="current">-</div></div><div class="card"><div class="label">Temperature</div><div class="value" id="temp">-</div></div><div class="card"><div class="label">Estimated energy</div><div class="value" id="energy">-</div></div><div class="card"><div class="label">Peak</div><div class="value" id="peak">-</div></div><div class="card"><div class="label">Cases</div><div class="value" id="cases">-</div></div><div class="card"><div class="label">Remaining</div><div class="value" id="remaining">-</div></div></div>
+<canvas id="curve" width="800" height="320"></canvas><div class="foot" id="graphmode">LIVE</div><div class="foot" id="detail">Connecting...</div><div class="head"><h2>Session history</h2><button class="action" onclick="live()">LIVE</button></div><div class="history"><table><thead><tr><th>#</th><th>Result</th><th>Time</th><th>Peak</th><th>Est. energy</th><th>Match</th><th>CSV</th></tr></thead><tbody id="history"><tr><td colspan="7">No retained results</td></tr></tbody></table></div></main><script>
 const $=id=>document.getElementById(id),cv=$('curve'),cx=cv.getContext('2d');let curve={actual:[],reference:[],max_ma:12500,duration_ms:8000},reviewId=null;
 function value(id,v,s=''){ $(id).textContent=v==null?'-':v+s }
 function draw(){let w=cv.width,h=cv.height,l=48,r=12,t=12,b=30;cx.clearRect(0,0,w,h);cx.strokeStyle='#24374a';cx.fillStyle='#8da4b8';cx.font='12px system-ui';for(let i=0;i<3;i++){let y=t+(h-t-b)*i/2;cx.beginPath();cx.moveTo(l,y);cx.lineTo(w-r,y);cx.stroke();cx.fillText((curve.max_ma*(2-i)/2000).toFixed(i?2:1)+'A',3,y+4)}for(let i=0;i<3;i++){let x=l+(w-l-r)*i/2;cx.fillText((curve.duration_ms*i/2000).toFixed(0)+'s',x-8,h-8)}function line(a,color,n){if(!a.length)return;cx.strokeStyle=color;cx.lineWidth=2;cx.beginPath();a.forEach((v,i)=>{let x=l+(w-l-r)*i/(n-1),y=t+(h-t-b)*(1-v/250);i?cx.lineTo(x,y):cx.moveTo(x,y)});cx.stroke()}line(curve.reference,'#718096',64);line(curve.actual,'#55b9ff',128)}
 async function status(){try{let s=await fetch('/api/status',{cache:'no-store'}).then(r=>r.json());value('state',s.state);value('mode',s.mode);value('current',s.current_a,' A');value('temp',s.temperature_c,' C');value('energy',s.energy_j,' J');value('peak',s.peak_a,' A');value('cases',s.cases);value('remaining',(s.remaining_ms/1000).toFixed(1),' s');$('detail').className='foot '+(s.fault?'bad':'ok');$('detail').textContent=(s.fault?'FAULT | ':'')+'Profile '+s.profile+' | match '+(s.match_pct==null?'-':s.match_pct+'%')+' | energy '+(s.energy_pct==null?'-':s.energy_pct+'%')+' | '+(s.cooldown_lock?'cooldown lock active':'monitoring')}catch(e){$('detail').className='foot bad';$('detail').textContent='Monitor unavailable'}}
 async function graph(){try{let u=reviewId==null?'/api/curve':'/api/history/'+reviewId;curve=await fetch(u,{cache:'no-store'}).then(r=>r.json());draw();$('graphmode').textContent=reviewId==null?'LIVE':'HISTORY #'+reviewId}catch(e){}}
 function live(){reviewId=null;graph()}function review(id){reviewId=id;graph()}
-async function refreshHistory(){try{let h=await fetch('/api/history',{cache:'no-store'}).then(r=>r.json());$('history').innerHTML=h.records.length?h.records.map(r=>`<tr><td><button class="action" onclick="review(${r.id})">${r.id}</button></td><td>${r.reason}</td><td>${(r.elapsed_ms/1000).toFixed(2)}s</td><td>${(r.peak_ma/1000).toFixed(1)}A</td><td>${(r.energy_mj/1000).toFixed(1)}J</td><td>${r.match_pct==null?'-':r.match_pct+'%'}</td><td><a class="action" href="/history/${r.id}.csv">CSV</a></td></tr>`).join(''):'<tr><td colspan="7">No retained results</td></tr>'}catch(e){}}
+async function refreshHistory(){try{let h=await fetch('/api/history',{cache:'no-store'}).then(r=>r.json());$('history').innerHTML=h.records.length?h.records.map(r=>`<tr><td><button class="action" onclick="review(${r.id})">${r.id}</button></td><td>${r.reason}</td><td>${(r.elapsed_ms/1000).toFixed(2)}s</td><td>${(r.peak_ma/1000).toFixed(1)}A</td><td>${(r.estimated_energy_mj/1000).toFixed(1)}J</td><td>${r.match_pct==null?'-':r.match_pct+'%'}</td><td><a class="action" href="/history/${r.id}.csv">CSV</a></td></tr>`).join(''):'<tr><td colspan="7">No retained results</td></tr>'}catch(e){}}
 status();graph();refreshHistory();setInterval(status,500);setInterval(graph,1000);setInterval(refreshHistory,2000);
 </script></body></html>)HTML";
 
@@ -2422,11 +2436,22 @@ static void r4SendWifiStatus(WiFiClient &client, int16_t const temperature,
   client.print(F(",\"energy_j\":"));
   if(graphAvailable)
   {
+    uint32_t const energy_mJ = estimatedEnergy_mJ(g_Analysis.inputEnergy_mJ);
+    client.print(energy_mJ / 1000UL);
+    client.write('.');
+    client.print((energy_mJ % 1000UL) / 100UL);
+  }
+  else client.print(F("null"));
+  client.print(F(",\"input_energy_j\":"));
+  if(graphAvailable)
+  {
     client.print(g_Analysis.inputEnergy_mJ / 1000UL);
     client.write('.');
     client.print((g_Analysis.inputEnergy_mJ % 1000UL) / 100UL);
   }
   else client.print(F("null"));
+  client.print(F(",\"energy_efficiency_pct\":"));
+  client.print(ANALYSIS_ENERGY_EFFICIENCY_PERCENT);
   client.print(F(",\"peak_a\":"));
   if(graphAvailable)
   {
@@ -2630,8 +2655,10 @@ static void r4SendWifiHistory(WiFiClient &client)
     client.print(r4WifiHistoryReasonName(record->reason));
     client.print(F("\",\"elapsed_ms\":"));
     client.print(record->elapsedTime_ms);
-    client.print(F(",\"energy_mj\":"));
+    client.print(F(",\"input_energy_mj\":"));
     client.print(record->inputEnergy_mJ);
+    client.print(F(",\"estimated_energy_mj\":"));
+    client.print(estimatedEnergy_mJ(record->inputEnergy_mJ));
     client.print(F(",\"peak_ma\":"));
     client.print(record->peakCurrent_ma);
     client.print(F(",\"analysis\":"));
@@ -2706,7 +2733,7 @@ static void r4SendWifiHistoryCsv(WiFiClient &client, uint16_t const id)
   client.println(F("Cache-Control: no-store"));
   client.println(F("Connection: close"));
   client.println();
-  client.println(F("id,reason,profile,elapsed_ms,energy_mJ,peak_mA,match_pct,sample_t_ms,current_mA"));
+  client.println(F("id,reason,profile,elapsed_ms,input_energy_mJ,estimated_energy_mJ,efficiency_pct,peak_mA,match_pct,sample_t_ms,current_mA"));
   for(uint8_t sample = 0; sample < record->graphCount; sample++)
   {
     client.print(record->id);
@@ -2718,6 +2745,10 @@ static void r4SendWifiHistoryCsv(WiFiClient &client, uint16_t const id)
     client.print(record->elapsedTime_ms);
     client.write(',');
     client.print(record->inputEnergy_mJ);
+    client.write(',');
+    client.print(estimatedEnergy_mJ(record->inputEnergy_mJ));
+    client.write(',');
+    client.print(ANALYSIS_ENERGY_EFFICIENCY_PERCENT);
     client.write(',');
     client.print(record->peakCurrent_ma);
     client.write(',');
@@ -4070,7 +4101,9 @@ void loop()
         g_RunSafety.restartCurrentTotal_ma = 0;
         g_RunSafety.restartCurrentSamples = 0;
         g_AdaptiveAnneal.energyCurrentSumTarget =
-          ((uint32_t)g_UserSettings.targetEnergy_J * 2500UL) / 3UL;
+          (((uint32_t)g_UserSettings.targetEnergy_J * 250000UL) +
+           ((3UL * ANALYSIS_ENERGY_EFFICIENCY_PERCENT) - 1UL)) /
+          (3UL * ANALYSIS_ENERGY_EFFICIENCY_PERCENT);
         g_AdaptiveAnneal.peakCurrent_ma = 0;
         g_AdaptiveAnneal.belowPeakSamples = 0;
         g_CasePerformance.currentCycleCompared = false;
@@ -4934,7 +4967,7 @@ static void saveProfileReference(uint8_t const slot)
     record[PROFILE_REFERENCE_SAMPLE_OFFSET + sample] = sampleCount ?
       (sampleTotal + (sampleCount / 2)) / sampleCount : 0;
   }
-  uint16_t const energy_J = (g_Analysis.inputEnergy_mJ + 500UL) / 1000UL;
+  uint16_t const energy_J = estimatedEnergy_J(g_Analysis.inputEnergy_mJ);
   uint16_t const values[] = {
     g_Analysis.peakCurrent_ma,
     energy_J,
@@ -4988,7 +5021,7 @@ static void saveProfileReference(uint8_t const slot)
     checksum ^= value;
   }
 
-  uint16_t const energy_J = (g_Analysis.inputEnergy_mJ + 500UL) / 1000UL;
+  uint16_t const energy_J = estimatedEnergy_J(g_Analysis.inputEnergy_mJ);
   uint16_t const values[] = {
     g_Analysis.peakCurrent_ma,
     energy_J,
@@ -5620,6 +5653,10 @@ static void finishCasePerformance(void)
   Serial.print(g_CasePerformance.peakPercent);
   Serial.print(FPSTR(TEXT_INPUT_ENERGY));
   printAnalysisEnergy_J(g_Analysis.inputEnergy_mJ);
+  Serial.print(FPSTR(TEXT_ESTIMATED_ENERGY));
+  printAnalysisEnergy_J(estimatedEnergy_mJ(g_Analysis.inputEnergy_mJ));
+  Serial.print(FPSTR(TEXT_ENERGY_EFFICIENCY));
+  Serial.print(ANALYSIS_ENERGY_EFFICIENCY_PERCENT);
   Serial.print(F(",peak_ma="));
   Serial.println(g_Analysis.peakCurrent_ma);
 }
@@ -5652,6 +5689,10 @@ static void finishAnalysis(bool const aborted)
   Serial.print(g_Analysis.elapsedTime_ms);
   Serial.print(FPSTR(TEXT_INPUT_ENERGY));
   printAnalysisEnergy_J(g_Analysis.inputEnergy_mJ);
+  Serial.print(FPSTR(TEXT_ESTIMATED_ENERGY));
+  printAnalysisEnergy_J(estimatedEnergy_mJ(g_Analysis.inputEnergy_mJ));
+  Serial.print(FPSTR(TEXT_ENERGY_EFFICIENCY));
+  Serial.print(ANALYSIS_ENERGY_EFFICIENCY_PERCENT);
   Serial.print(F(",peak_ma="));
   Serial.println(g_Analysis.peakCurrent_ma);
   updateSystemState(STATE_ANALYSIS_RESULT);
@@ -6037,14 +6078,13 @@ static void drawAnalysisConfigScreen(void)
     }
     else if(item == ANALYSIS_CONFIG_TARGET && g_AnalysisConfig.stopType == PROFILE_STOP_ENERGY)
     {
-      display.print(F("ENERGY: "));
+      display.print(F("~J: "));
       for(uint8_t digit = 0; digit < 4; digit++)
       {
         setTextSelected(g_AnalysisConfig.selection == ANALYSIS_CONFIG_TARGET + digit);
         display.write('0' + g_AnalysisConfig.energyDigits[digit]);
       }
       display.setTextColor(WHITE);
-      display.write('J');
     }
     else if(item == ANALYSIS_CONFIG_TARGET)
     {
@@ -6175,7 +6215,7 @@ static void drawCapturedGraph(bool const withReference)
 *//*-------------------------------------------------------------------------*/
 static void drawGraphMeasurements(void)
 {
-  uint16_t const energy_J = (g_Analysis.inputEnergy_mJ + 500UL) / 1000UL;
+  uint16_t const energy_J = estimatedEnergy_J(g_Analysis.inputEnergy_mJ);
 
   display.setTextSize(1);
   display.setTextColor(WHITE);
@@ -6188,7 +6228,7 @@ static void drawGraphMeasurements(void)
   display.write('A');
   display.fillRect(ANALYSIS_ENERGY_X, 24, SCREEN_WIDTH - ANALYSIS_ENERGY_X, 8, BLACK);
   display.setCursor(ANALYSIS_ENERGY_X, 24);
-  display.print(F("J:"));
+  display.print(F("~J"));
   display.print(energy_J);
 }
 
@@ -6283,10 +6323,26 @@ static void drawAnalysisStatus(bool const dumping)
     display.print((g_Analysis.peakCurrent_ma % 1000) / 100);
     display.write('A');
     display.setCursor(ANALYSIS_ENERGY_X, 24);
-    display.print(F("J:"));
-    display.print((g_Analysis.inputEnergy_mJ + 500UL) / 1000UL);
+    display.print(F("~J"));
+    display.print(estimatedEnergy_J(g_Analysis.inputEnergy_mJ));
   }
   display.display();
+}
+
+/*---------------------------------------------------------------------------*/
+/*! @brief      Apply the fixed ZVS-efficiency estimate without storing state.
+*//*-------------------------------------------------------------------------*/
+static uint32_t estimatedEnergy_mJ(uint32_t const inputEnergy_mJ)
+{
+  return (inputEnergy_mJ * ANALYSIS_ENERGY_EFFICIENCY_PERCENT + 50UL) / 100UL;
+}
+
+/*---------------------------------------------------------------------------*/
+/*! @brief      Return the rounded configured-efficiency estimate in joules.
+*//*-------------------------------------------------------------------------*/
+static uint16_t estimatedEnergy_J(uint32_t const inputEnergy_mJ)
+{
+  return (estimatedEnergy_mJ(inputEnergy_mJ) + 500UL) / 1000UL;
 }
 
 /*---------------------------------------------------------------------------*/
@@ -6602,7 +6658,7 @@ static void drawProfileReferenceScreen(void)
   display.print((peakCurrent_ma % 1000) / 100);
   display.write('A');
   display.setCursor(84, 24);
-  display.print(F("J:"));
+  display.print(F("~J"));
   display.print(energy_J);
   display.display();
 }

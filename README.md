@@ -109,7 +109,7 @@ detect every mechanical jam.
 - Operating mode
 - RESTART setting
 - DUMP setting
-- TIME, ENERGY, or PEAK DROP stop rule
+- TIME, estimated ENERGY, or PEAK DROP stop rule
 - An optional 64-sample Analyse reference curve
 
 MODE selects a profile or action; UP opens or confirms it. Empty slots are
@@ -117,6 +117,11 @@ shown as `PROFILE 1` through `PROFILE 8`. A profile name has ten characters;
 hold UP for one second while editing the profile name to cycle characters
 automatically. Loading a profile applies its settings immediately. The learned
 current baseline is per-run and is not saved in a profile.
+
+Firmware 4.2.0 uses a new profile/reference format for estimated-energy
+semantics. Profiles created by earlier builds are intentionally invalidated;
+recreate their names, settings and Analyse references after upgrading. Global
+RESTART/DUMP settings and R4 WiFi credentials are unaffected.
 
 Opening a profile defaults to `LOAD >`; `SAVE`, `RENAME`, and confirmed
 `DELETE` operations display a brief acknowledgement. `PERFORMANCE >` shows the
@@ -134,9 +139,9 @@ run. It is intended for attended testing with sacrificial cases while working
 out the current and energy profile for a new case type. An analysis run may
 overheat and ruin the case; it is not a normal annealing cycle.
 
-| Load prompt | Analyse menu | ENERGY configuration | Completed result |
-| --- | --- | --- | --- |
-| ![Analyse load-case prompt](docs/screenshots/analyse-load.png) | ![Analyse menu with NEW, REVIEW, CONFIG and BACK](docs/screenshots/analyse-menu.png) | ![Analysis ENERGY configuration](docs/screenshots/analysis-config-energy.png) | ![Completed Analyse current graph](docs/screenshots/analyse-result.png) |
+| Load prompt | Analyse menu |
+| --- | --- |
+| ![Analyse load-case prompt](docs/screenshots/analyse-load.png) | ![Analyse menu with NEW, REVIEW, CONFIG and BACK](docs/screenshots/analyse-menu.png) |
 
 A current sensor is required. Select `ANALYSE >`, load a case when prompted,
 then press START. During the run the firmware:
@@ -144,19 +149,21 @@ then press START. During the run the firmware:
 - Targets one current sample every 25 ms.
 - Draws the current trace across the 128-pixel OLED. The horizontal scale is
   zero to eight seconds and the vertical scale is zero to 12.5 A.
-- Shows the running current and estimated input energy.
+- Shows the running current and an `~J` energy estimate calculated at 80% of
+  measured electrical input energy.
 - Sends each sample to the USB serial port at 115200 baud for external logging
   and graphing.
-- Retains the latest graph, peak current, and total input-energy estimate in RAM
-  so it can be reviewed or configured before it is saved.
+- Retains the latest graph, peak current, raw input energy and 80% estimate in
+  RAM so the result can be reviewed or configured before it is saved.
 - Turns the annealing output off after eight seconds, opens the drop gate for
   five seconds, then shows the completed graph with `BACK >`.
 
 After one result has been retained, opening Analyse shows `NEW >`, `REVIEW >`,
-`CONFIG >`, and `BACK >`. CONFIG selects a TIME, ENERGY, or PEAK DROP stop
-rule, its target or maximum time, and the destination profile. Saving writes a
-64-sample reference plus peak current, total energy, duration, and checksum to
-that profile. The Analyse working copy is then cleared so the saved curve is
+`CONFIG >`, and `BACK >`. CONFIG selects a TIME, estimated ENERGY, or PEAK DROP
+stop rule, its target or maximum time, and the destination profile. An ENERGY
+target is the same 80% estimate shown as `~J` on the graph. Saving writes a
+64-sample reference plus peak current, estimated energy, duration, and checksum
+to that profile. The Analyse working copy is then cleared so the saved curve is
 reviewed through the profile's `PERFORMANCE >` action instead of appearing in
 two menus.
 
@@ -169,9 +176,9 @@ latest case remains available under PERFORMANCE until another comparison or
 analysis replaces it. Match results are observational: the selected TIME,
 ENERGY, or PEAK DROP rule still determines when annealing stops.
 
-| Saved reference | Auto-feed reload | Countdown completion | PERFORMANCE review |
-| --- | --- | --- | --- |
-| ![Saved profile reference](docs/screenshots/profile-reference.png) | ![Performance comparison during auto-feed reload](docs/screenshots/performance-next.png) | ![Performance countdown reaching zero](docs/screenshots/performance-next-complete.png) | ![Retained profile performance result](docs/screenshots/performance-result.png) |
+| Auto-feed reload | Countdown completion | PERFORMANCE review |
+| --- | --- | --- |
+| ![Performance comparison during auto-feed reload](docs/screenshots/performance-next.png) | ![Performance countdown reaching zero](docs/screenshots/performance-next-complete.png) | ![Retained profile performance result](docs/screenshots/performance-result.png) |
 
 Holding MODE for at least 300 ms during an analysis is the manual safety abort.
 It immediately turns the annealing output off and opens the drop gate for five
@@ -185,14 +192,16 @@ Serial output uses records of the following form:
 ```text
 ANALYSE,START
 ANALYSE,SAMPLE,t_ms=25,current_ma=6500,input_energy_J=7.800
-ANALYSE,END,t_ms=8000,input_energy_J=400.000,peak_ma=12000
+ANALYSE,END,t_ms=8000,input_energy_J=400.000,estimated_energy_J=320.000,efficiency_pct=80,peak_ma=12000
 ANALYSE,GATE_OPEN
 ```
 
-The energy value is calculated from measured current, elapsed time, and the
-configured 48 V supply voltage. It estimates electrical energy entering the ZVS
-board, not the thermal energy absorbed by the case; conversion losses and energy
-heating the coil and surrounding hardware are included.
+Raw input energy is calculated from measured current, elapsed time, and the
+configured 48 V supply voltage. The OLED, ENERGY profiles and primary browser
+value show 80% of that input as a deliberately approximate `~J` value. The
+factor represents assumed ZVS efficiency; it does not measure case temperature
+or account for variable coupling, coil heating and other losses. Serial, JSON
+and CSV retain the raw input value for technical analysis.
 
 ## Information and diagnostics
 
@@ -328,8 +337,8 @@ normal LAN credentials, and the annealer will join that network. The final Info
 rows show connection state and IP address. `MONITOR: ON/OFF` controls whether
 the saved network is used after reset.
 
-The page shows operating state, current, temperature, energy, peak current,
-case count, time remaining, and live or retained current/reference curves. If
+The page shows operating state, current, temperature, estimated energy, peak
+current, case count, time remaining, and live or retained current/reference curves. If
 the saved network cannot be reached within 15 seconds, the setup access point
 returns so the credentials can be corrected. Credentials are stored
 unencrypted in the R4 EEPROM-backed storage.
@@ -384,6 +393,10 @@ The tagged-release, checksum and provenance procedure is in
 SW version 4.2.0
 
 - Unified the displayed release version across Uno R3, R4 Minima and R4 WiFi.
+- Changed user-facing ENERGY values and targets to an 80%-efficiency estimate,
+  displayed as `~J`, while retaining raw input energy in technical outputs.
+- Invalidated profiles and Analyse references saved by earlier firmware so raw
+  and estimated ENERGY targets cannot be confused.
 - Added visible WiFi monitor and setup controls under Settings.
 - Added persistent LAN credentials, automatic reconnect and setup-AP fallback.
 - Added WiFi connection state and IP address to Info while preserving the

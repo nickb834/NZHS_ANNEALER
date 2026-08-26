@@ -107,12 +107,12 @@ in [R4_WIFI_MONITOR.md](R4_WIFI_MONITOR.md).
   icon and standalone dark presentation are used.
 - With history empty, confirm the dashboard and `/api/history` report no
   records. Complete Analyse, user-aborted Analyse, profiled and ordinary timed
-  runs and confirm newest-first rows, stop reasons, elapsed time, peak, energy
-  and optional match values.
+  runs and confirm newest-first rows, stop reasons, elapsed time, peak,
+  estimated energy and optional match values.
 - Select retained rows and LIVE repeatedly; confirm the graph changes without
   affecting the physical state machine. Download each CSV and verify its
-  summary, sample times and current values against the corresponding graph and
-  Analyse Serial output.
+  raw/estimated energy, 80% factor, sample times and current values against the
+  corresponding graph and Analyse Serial output.
 - Create more than 16 results and confirm the oldest record is replaced without
   heap growth or EEPROM writes. Reset and confirm history is empty.
 - Exercise stopped, Analyse, normal anneal, dropping, reloading, cooldown and a
@@ -185,9 +185,10 @@ in [R4_WIFI_MONITOR.md](R4_WIFI_MONITOR.md).
 - With a current sensor, select Analyse, confirm `LOAD CASE` / `PRESS START`,
   and verify START begins one attended eight-second capture.
 - Confirm current is sampled at the 25 ms target rate, the graph fills from left
-  to right, and live amps and joules use their final result positions.
-- Confirm serial output contains `ANALYSE,START`, timestamped SAMPLE records,
-  END with elapsed time/energy/peak current, and `ANALYSE,GATE_OPEN`.
+  to right, and live amps plus estimated `~J` use their final result positions.
+- Confirm serial output contains `ANALYSE,START`, timestamped SAMPLE records
+  with raw input energy, END with raw/estimated energy, `efficiency_pct=80`,
+  elapsed time and peak current, and `ANALYSE,GATE_OPEN`.
 - Confirm the annealer switches off at eight seconds, the gate opens for five
   seconds, the DUMPING message is brief, and the completed graph has `BACK >`.
 - Hold MODE for at least 300 ms during a capture: confirm immediate annealer off,
@@ -197,7 +198,8 @@ in [R4_WIFI_MONITOR.md](R4_WIFI_MONITOR.md).
 - In CONFIG, test TIME adjustment including rapid 0.5-second increments and the
   two-second reset; save and reload the resulting profile.
 - Configure ENERGY with each four-digit editor position, including a leading
-  zero such as `0300`, and verify it is stored as 300 J.
+  zero such as `0300`, and verify `~J: 0300` stores a 300 J estimate and stops
+  at approximately 375 J raw input energy.
 - Configure PEAK DROP across its percentage range and verify the separate MAX
   TIME safety limit is stored and enforced.
 - Select every profile destination, save, and confirm the Analyse working copy
@@ -205,12 +207,15 @@ in [R4_WIFI_MONITOR.md](R4_WIFI_MONITOR.md).
 
 ## Profile references and performance
 
+- Upgrade from an earlier profile-format build and confirm all eight profiles
+  and saved Analyse references appear empty while global RESTART/DUMP and R4
+  WiFi configuration remain intact.
 - Confirm every profile action list opens on LOAD, including an empty slot.
 - Confirm valid LOAD shows `LOADED` then returns to TIME; empty LOAD shows
   `EMPTY`; SAVE and confirmed DELETE show their corresponding acknowledgement.
 - Select PERFORMANCE before saving a reference and confirm `NO DATA`.
 - Save an Analyse reference, power-cycle, reload the profile, and confirm its
-  reference graph, peak current and total joules persist.
+  reference graph, peak current and estimated `~J` persist.
 - Delete that profile and confirm its reference is invalidated.
 - Run a case that closely follows the saved curve and confirm the solid case
   trace overlays the dotted reference with a high match percentage.
