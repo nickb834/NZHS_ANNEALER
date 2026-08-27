@@ -159,7 +159,6 @@ static const char TEXT_BACK_ITEM[] PROGMEM = "BACK >";
 static const char TEXT_SAVE_ITEM[] PROGMEM = "SAVE >";
 static const char TEXT_LOAD_ITEM[] PROGMEM = "LOAD >";
 static const char TEXT_REFERENCE_ITEM[] PROGMEM = "REFERENCE >";
-static const char TEXT_LAST_CASE_ITEM[] PROGMEM = "LAST CASE >";
 static const char TEXT_RENAME_ITEM[] PROGMEM = "RENAME >";
 static const char TEXT_DELETE_ITEM[] PROGMEM = "DELETE >";
 static const char TEXT_NEW_ITEM[] PROGMEM = "NEW >";
@@ -175,7 +174,7 @@ static const char * const PROFILE_ACTION_TEXT[] PROGMEM = {
   TEXT_REFERENCE_ITEM, TEXT_BACK_ITEM
 };
 static const char * const STOPPED_MENU_TEXT[] PROGMEM = {
-  TEXT_SETTINGS_ITEM, TEXT_PROFILES_ITEM, TEXT_ANALYSE_ITEM, TEXT_LAST_CASE_ITEM,
+  TEXT_SETTINGS_ITEM, TEXT_PROFILES_ITEM, TEXT_ANALYSE_ITEM, TEXT_REVIEW_ITEM,
   TEXT_INFO_ITEM, TEXT_DIAGNOSTICS_ITEM
 };
 
@@ -2267,7 +2266,7 @@ static char const * r4WifiStateName(tStateMachineStates const state)
     case STATE_PROFILES: return "PROFILES";
     case STATE_PROFILE_ACTIONS: return "PROFILE";
     case STATE_PROFILE_REFERENCE: return "REFERENCE";
-    case STATE_LAST_CASE: return "LAST CASE";
+    case STATE_LAST_CASE: return "REVIEW";
     case STATE_PROFILE_NAME_EDIT: return "RENAME";
     case STATE_PROFILE_DELETE_CONFIRM: return "DELETE";
     case STATE_PROFILE_NOTICE: return "PROFILE NOTICE";
@@ -6703,7 +6702,7 @@ static void drawLastCaseScreen(void)
   }
   beginFullWidthScreen();
   display.setCursor(0, 0);
-  display.print(FPSTR(TEXT_LAST_CASE_ITEM));
+  display.print(FPSTR(TEXT_REVIEW_ITEM));
   display.setCursor(0, 8);
   display.print(F("NO DATA"));
   display.setCursor(0, 24);

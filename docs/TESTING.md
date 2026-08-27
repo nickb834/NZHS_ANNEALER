@@ -135,7 +135,7 @@ in [R4_WIFI_MONITOR.md](R4_WIFI_MONITOR.md).
 
 ## Controls and menus
 
-- Check TIME → MODE → SETTINGS → PROFILES → ANALYSE → LAST CASE → INFO →
+- Check TIME → MODE → SETTINGS → PROFILES → ANALYSE → REVIEW → INFO →
   DIAGNOSTICS → TIME navigation on the stopped screen.
 - Confirm UP opens each selected menu and every `BACK >` returns to the
   originating stopped-screen item.
@@ -228,17 +228,17 @@ in [R4_WIFI_MONITOR.md](R4_WIFI_MONITOR.md).
 - In auto-feed, confirm it remains visible during reload with a live
   `NEXT 2.0s` to `NEXT 0.1s` countdown and no added feeder delay.
 - In free-run, confirm the normal manual LOAD countdown remains visible. In
-  single-shot, confirm the latest result remains available under LAST CASE.
+  single-shot, confirm the latest result remains available under REVIEW.
 - Without loading a reference, complete TIME, ENERGY and PEAK DROP cases in
   single-shot, free-run and auto-feed. Confirm each latest graph is available
-  under LAST CASE with peak current and estimated `~J`.
-- With a loaded reference, confirm LAST CASE overlays the dotted reference while
+  under REVIEW with peak current and estimated `~J`.
+- With a loaded reference, confirm REVIEW overlays the dotted reference while
   profile REFERENCE continues to show only the saved curve and aggregate values.
-- Open LAST CASE before any normal capture and confirm `NO DATA`; press UP and
-  confirm it returns to the LAST CASE home selection.
+- Open REVIEW before any normal capture and confirm `NO DATA`; press UP and
+  confirm it returns to the REVIEW home selection.
 - From the second case, confirm a no-current/low-current safety fault takes
   precedence over comparison reporting and prevents the gate opening while the
-  captured fault trace remains available under LAST CASE.
+  captured fault trace remains available under REVIEW.
 
 ## Profiles, information, and stability
 

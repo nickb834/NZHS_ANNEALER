@@ -22,7 +22,7 @@ The OLED screen retains its original layout: anneal time on the left;
 fan state, operating mode, case count, and temperature on the right.
 
 Press MODE to move through `TIME`, `MODE`, `SETTINGS`, `PROFILES`, `ANALYSE`,
-`LAST CASE`, `INFO`, and `DIAGNOSTICS`; press UP to open the highlighted menu.
+`REVIEW`, `INFO`, and `DIAGNOSTICS`; press UP to open the highlighted menu.
 Representative home screens are shown below.
 
 | TIME | MODE | SETTINGS | PROFILES |
@@ -126,7 +126,7 @@ RESTART/DUMP settings and R4 WiFi credentials are unaffected.
 Opening a profile defaults to `LOAD >`; `SAVE`, `RENAME`, and confirmed
 `DELETE` operations display a brief acknowledgement. `REFERENCE >` shows only
 the profile's saved Analyse reference, peak current and estimated energy. Actual
-normal-case graphs are reviewed consistently through the home `LAST CASE >`
+normal-case graphs are reviewed consistently through the home `REVIEW >`
 item.
 
 | Profile selector | LOAD action |
@@ -173,7 +173,7 @@ that curve. During annealing the dotted reference and solid current-case trace
 are shown together. The completed comparison remains visible during the normal
 drop and, in auto-feed mode, during the existing reload countdown without
 adding delays. The footer shows values such as `M94% E103% NEXT 1.8s`; the
-latest normal case remains available under `LAST CASE >` until another normal
+latest normal case remains available under `REVIEW >` until another normal
 case or Analyse capture replaces it. Match results are observational: the selected TIME,
 ENERGY, or PEAK DROP rule still determines when annealing stops.
 
@@ -182,7 +182,7 @@ ENERGY, or PEAK DROP rule still determines when annealing stops.
 | ![Performance comparison during auto-feed reload](docs/screenshots/performance-next.png) | ![Performance countdown reaching zero](docs/screenshots/performance-next-complete.png) |
 
 Every normal run with a detected current sensor captures its current graph,
-including one-shot and free-run cases without a profile reference. `LAST CASE >`
+including one-shot and free-run cases without a profile reference. `REVIEW >`
 shows the latest trace with peak current and estimated `~J`; a loaded reference
 is overlaid as a dotted line. The buffer is session-only and is replaced by the
 next normal case or Analyse capture.
@@ -409,7 +409,7 @@ SW version 4.2.0
   supply value instead of an implicit 48 V stop-rule factor.
 - Invalidated profiles and Analyse references saved by earlier firmware so raw
   and estimated ENERGY targets cannot be confused.
-- Added universal current-graph capture and a home `LAST CASE >` review screen;
+- Added universal current-graph capture and a home `REVIEW >` screen;
   renamed profile `PERFORMANCE >` to `REFERENCE >` so it shows saved data only.
 - Added visible WiFi monitor and setup controls under Settings.
 - Added persistent LAN credentials, automatic reconnect and setup-AP fallback.
