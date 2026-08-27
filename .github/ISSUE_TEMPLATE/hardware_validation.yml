@@ -1,0 +1,73 @@
+name: Hardware validation result
+description: Record what was physically tested, what passed and what remains unverified.
+title: "[Validation] "
+body:
+  - type: dropdown
+    id: board
+    attributes:
+      label: Board
+      options:
+        - Uno R3 or compatible ATmega328P board
+        - Uno R4 Minima
+        - Uno R4 WiFi
+        - Other
+    validations:
+      required: true
+
+  - type: input
+    id: firmware
+    attributes:
+      label: Firmware commit
+      description: Use the exact commit SHA or release tag that was installed.
+    validations:
+      required: true
+
+  - type: textarea
+    id: hardware
+    attributes:
+      label: Test hardware
+      description: Include shield revision, display, sensors, feeder, relay or SSR, power supply and case type where relevant.
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: areas
+    attributes:
+      label: Areas exercised
+      options:
+        - label: Boot, OLED and buttons
+        - label: Profiles and EEPROM persistence
+        - label: Annealing output and timing
+        - label: Temperature sensing and cooldown
+        - label: Current sensing and safety stops
+        - label: Feeder and drop gate
+        - label: Analyse and performance comparison
+        - label: R4 LED matrix diagnostics
+        - label: R4 WiFi dashboard and API
+
+  - type: textarea
+    id: results
+    attributes:
+      label: Results
+      description: State each test performed and whether it passed or failed. Include measured values where useful.
+    validations:
+      required: true
+
+  - type: textarea
+    id: untested
+    attributes:
+      label: Not tested
+      description: Explicitly list relevant behaviour that this result does not validate.
+    validations:
+      required: true
+
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Evidence
+      description: Attach serial logs, screenshots, video or measurements where available.
+
+  - type: textarea
+    id: observations
+    attributes:
+      label: Additional observations

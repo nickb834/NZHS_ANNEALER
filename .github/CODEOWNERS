@@ -1,0 +1,15 @@
+# Repository owner and final reviewer.
+* @nickb834
+
+# Firmware source, platform backends and tracked release artifacts.
+/NZHS_ANNEALER_128x32_OLED/ @nickb834
+
+# Build policy, hardware validation and safety documentation.
+/.github/workflows/ @nickb834
+/docs/TESTING.md @nickb834
+/docs/RELEASING.md @nickb834
+/docs/releases/ @nickb834
+/docs/R4_MATRIX_DEBUG.md @nickb834
+/docs/R4_WIFI_MONITOR.md @nickb834
+/simulide/ @nickb834
+/SECURITY.md @nickb834

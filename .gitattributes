@@ -1,0 +1,6 @@
+# Firmware images are generated and reviewed through reproducible checksums.
+*.hex binary
+*.bin binary
+
+# Generated from the documented browser assets.
+/NZHS_ANNEALER_128x32_OLED/WebAssets.h linguist-generated=true
