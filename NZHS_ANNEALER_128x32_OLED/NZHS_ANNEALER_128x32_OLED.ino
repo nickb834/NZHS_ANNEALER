@@ -60,6 +60,12 @@
 #define ANALYSIS_GRAPH_MAX_CURRENT_MA 12500UL
 #define ANALYSIS_GRAPH_CURRENT_STEP_MA 50U
 #define ANALYSIS_GRAPH_MAX_SAMPLE (ANALYSIS_GRAPH_MAX_CURRENT_MA / ANALYSIS_GRAPH_CURRENT_STEP_MA)
+#define ANALYSIS_GRAPH_GRID_CURRENT_MA 2500U
+#define ANALYSIS_GRAPH_GRID_TIME_MS 1000U
+#define ANALYSIS_GRAPH_HORIZONTAL_DOT_SPACING 3U
+#define ANALYSIS_GRAPH_VERTICAL_DOT_SPACING 2U
+#define ANALYSIS_GRAPH_PLOT_TOP 2U
+#define ANALYSIS_GRAPH_PLOT_BOTTOM 22U
 #define ANALYSIS_PEAK_CONFIRM_SAMPLES 3
 #define ANALYSIS_DEFAULT_PEAK_DROP_PERCENT 10
 #define ANALYSIS_MAX_ENERGY_J 9999
@@ -1162,6 +1168,7 @@ static bool readModeButton(void);
 static bool readUpButton(void);
 static void turnAnnealerOn(void);
 static void turnAnnealerOff(void);
+static void stopAnnealingOutputs(void) __attribute__((noinline));
 static void openDropGate(void);
 static void closeDropGate(void);
 static void turnStartStopLedOn(void);
@@ -1204,6 +1211,7 @@ static void beginAnalysisConfig(void);
 static inline void updateAnalysisConfig(bool const rapidTimeAdjust) __attribute__((always_inline));
 static void saveAnalysisConfigToProfile(uint8_t const slot);
 static void resetGraphCapture(uint32_t const currentTime, bool const isAnalysis);
+static void finalizeGraphCapture(void) __attribute__((noinline));
 static uint32_t sampleInputEnergy_mJ(uint16_t const current_ma,
                                      uint16_t const samplePeriod_ms);
 static uint16_t recordGraphCurrent(uint16_t const current_ma, uint32_t const currentTime);
@@ -1215,14 +1223,21 @@ static void drawAnalysisMenuScreen(void);
 static void drawAnalysisConfigScreen(void);
 static void setTextSelected(bool const selected) __attribute__((noinline));
 static void beginFullWidthScreen(void) __attribute__((noinline));
+static void drawBottomBackItem(void) __attribute__((noinline));
 static void drawAnalysisLoadScreen(void);
 static void drawAnalysisGraph(void);
 static void drawAnalysisStatus(bool const dumping);
+static void drawGraphMetrics(uint16_t const current_ma,
+                             uint16_t const energy_J) __attribute__((noinline));
 static void drawCasePerformanceGraph(tPerformanceFooter const footer,
                                      uint16_t const remainingTime_ms);
 static uint32_t estimatedEnergy_mJ(uint32_t const inputEnergy_mJ);
 static uint16_t estimatedEnergy_J(uint32_t const inputEnergy_mJ);
 static void printAnalysisEnergy_J(uint32_t const energy_mJ);
+static void printAnalysisSummary(void) __attribute__((noinline));
+static void printDurationTenths(uint16_t const duration_ms) __attribute__((noinline));
+static void printMilliValueTenths(uint16_t const value,
+                                  char const unit) __attribute__((noinline));
 static void setFreeRunMode(void);
 static void setDumpButtonEnabled(bool const enabled);
 static void cycleCurrentMode(void);
@@ -1236,6 +1251,11 @@ static void saveProfile(uint8_t const slot, tCartridgeProfile const * const prof
 static void loadProfileStopRule(uint8_t const slot);
 static void saveProfileStopRule(uint8_t const slot, uint16_t const targetEnergy_J,
                                 uint8_t const peakDropPercent);
+static uint16_t readEepromUint16(uint16_t const address) __attribute__((noinline));
+#if NZHS_PLATFORM_UNO_R3
+static void updateEepromUint16(uint16_t const address,
+                               uint16_t const value) __attribute__((noinline));
+#endif
 static uint16_t getProfileReferenceAddress(uint8_t const slot);
 static uint8_t readProfileReferenceSample(uint8_t const slot, uint8_t const sample);
 static bool isProfileReferenceValid(uint8_t const slot);
@@ -1316,13 +1336,17 @@ static void r4SendWifiStatus(WiFiClient &client, int16_t const temperature,
                              uint16_t const current_ma,
                              uint16_t const casesAnnealed,
                              bool const fanIsOn);
+static void r4SendWifiGraphJson(WiFiClient &client,
+                                uint8_t const * const actualSamples,
+                                uint8_t const actualCount,
+                                uint8_t const referenceSlot,
+                                bool const referenceValid) __attribute__((noinline));
 static void r4SendWifiCurve(WiFiClient &client);
 static void r4SendWifiHistory(WiFiClient &client);
 static void r4SendWifiHistoryCurve(WiFiClient &client, uint16_t const id);
 static void r4SendWifiHistoryCsv(WiFiClient &client, uint16_t const id);
 static char const * r4WifiHistoryReasonName(uint8_t const reason);
 static tWifiHistoryRecord const * r4FindWifiHistory(uint16_t const id);
-static void r4FinalizeGraphCapture(void);
 static void r4StoreWifiHistory(tWifiHistoryReason const reason,
                                bool const analysis,
                                bool const matchValid);
@@ -1437,14 +1461,14 @@ void setup()
   #ifndef DEBUG //dont do the splash startup in debug
     drawStartupLogo();
     display.display();
-    delay(2000);
+    delay(1000);
     display.clearDisplay();
     drawStartupLogo();
     display.drawBitmap(24, 11, anneallogoDelta, 80, 10, SSD1306_INVERSE);
     display.display();
-    delay(2000);
+    delay(1000);
 
-    for(uint8_t i = 0; i <= 20; i++)
+    for(uint8_t i = 0; i < 5; i++)
     {
       display.clearDisplay();
       display.drawBitmap(16, 6, projectile, 88, 19, 1);
@@ -1997,8 +2021,7 @@ static void r4RenderMatrixPage(int16_t const temperature)
 *//*-------------------------------------------------------------------------*/
 static void r4BeginMatrixDebug(void)
 {
-  turnAnnealerOff();
-  turnStartStopLedOff();
+  stopAnnealingOutputs();
   closeDropGate();
   digitalWrite(g_FeederStepperEnPin, HIGH);
   r4ResetWatchdog();
@@ -2184,8 +2207,7 @@ static void r4UpdateMatrixDebug(int16_t const temperature)
   {
     return;
   }
-  turnAnnealerOff();
-  turnStartStopLedOff();
+  stopAnnealingOutputs();
   digitalWrite(g_FeederStepperEnPin, HIGH);
   bool const buttonChanged = g_R4MatrixButtonChanged;
   g_R4MatrixButtonChanged = false;
@@ -2490,12 +2512,14 @@ static void r4SendWifiStatus(WiFiClient &client, int16_t const temperature,
 }
 
 /*---------------------------------------------------------------------------*/
-/*! @brief      Serve compact 0-250 graph samples and the active reference.
+/*! @brief      Send the shared live/history graph JSON representation.
 *//*-------------------------------------------------------------------------*/
-static void r4SendWifiCurve(WiFiClient &client)
+static void r4SendWifiGraphJson(WiFiClient &client,
+                                uint8_t const * const actualSamples,
+                                uint8_t const actualCount,
+                                uint8_t const referenceSlot,
+                                bool const referenceValid)
 {
-  uint8_t const actualCount = g_Analysis.graphColumn == UINT8_MAX ? 0 :
-    g_Analysis.graphColumn + 1;
   r4SendWifiHeaders(client, "application/json");
   client.print(F("{\"duration_ms\":"));
   client.print(ANALYSIS_DURATION_MS);
@@ -2505,18 +2529,30 @@ static void r4SendWifiCurve(WiFiClient &client)
   for(uint8_t sample = 0; sample < actualCount; sample++)
   {
     if(sample) client.write(',');
-    client.print(g_Analysis.graphSamples[sample]);
+    client.print(actualSamples[sample]);
   }
   client.print(F("],\"reference\":["));
-  if(g_CasePerformance.referenceValid)
+  if(referenceValid)
   {
     for(uint8_t sample = 0; sample < PROFILE_REFERENCE_SAMPLE_COUNT; sample++)
     {
       if(sample) client.write(',');
-      client.print(readProfileReferenceSample(g_CasePerformance.referenceSlot, sample));
+      client.print(readProfileReferenceSample(referenceSlot, sample));
     }
   }
   client.println(F("]}"));
+}
+
+/*---------------------------------------------------------------------------*/
+/*! @brief      Serve compact 0-250 graph samples and the active reference.
+*//*-------------------------------------------------------------------------*/
+static void r4SendWifiCurve(WiFiClient &client)
+{
+  uint8_t const actualCount = g_Analysis.graphColumn == UINT8_MAX ? 0 :
+    g_Analysis.graphColumn + 1;
+  r4SendWifiGraphJson(client, g_Analysis.graphSamples, actualCount,
+                      g_CasePerformance.referenceSlot,
+                      g_CasePerformance.referenceValid);
 }
 
 /*---------------------------------------------------------------------------*/
@@ -2557,20 +2593,6 @@ static tWifiHistoryRecord const * r4FindWifiHistory(uint16_t const id)
   return NULL;
 }
 
-/*---------------------------------------------------------------------------*/
-/*! @brief      Finalise aggregate fields for any shared graph capture.
-*//*-------------------------------------------------------------------------*/
-static void r4FinalizeGraphCapture(void)
-{
-  g_Analysis.elapsedTime_ms = millis() - g_Analysis.startTime;
-  if(g_Analysis.elapsedTime_ms > ANALYSIS_DURATION_MS)
-  {
-    g_Analysis.elapsedTime_ms = ANALYSIS_DURATION_MS;
-  }
-  g_Analysis.graphValid = g_Analysis.graphColumn != UINT8_MAX;
-}
-
-/*---------------------------------------------------------------------------*/
 /*! @brief      Copy the current graph and aggregates into the RAM ring.
 *//*-------------------------------------------------------------------------*/
 static void r4StoreWifiHistory(tWifiHistoryReason const reason,
@@ -2687,28 +2709,10 @@ static void r4SendWifiHistoryCurve(WiFiClient &client, uint16_t const id)
     client.println(F("History record not found"));
     return;
   }
-  r4SendWifiHeaders(client, "application/json");
-  client.print(F("{\"duration_ms\":"));
-  client.print(ANALYSIS_DURATION_MS);
-  client.print(F(",\"max_ma\":"));
-  client.print(ANALYSIS_GRAPH_MAX_CURRENT_MA);
-  client.print(F(",\"actual\":["));
-  for(uint8_t sample = 0; sample < record->graphCount; sample++)
-  {
-    if(sample) client.write(',');
-    client.print(record->graphSamples[sample]);
-  }
-  client.print(F("],\"reference\":["));
-  if(record->profileSlot != WIFI_HISTORY_NO_PROFILE &&
-     isProfileReferenceValid(record->profileSlot))
-  {
-    for(uint8_t sample = 0; sample < PROFILE_REFERENCE_SAMPLE_COUNT; sample++)
-    {
-      if(sample) client.write(',');
-      client.print(readProfileReferenceSample(record->profileSlot, sample));
-    }
-  }
-  client.println(F("]}"));
+  bool const referenceValid = record->profileSlot != WIFI_HISTORY_NO_PROFILE &&
+                              isProfileReferenceValid(record->profileSlot);
+  r4SendWifiGraphJson(client, record->graphSamples, record->graphCount,
+                      record->profileSlot, referenceValid);
 }
 
 /*---------------------------------------------------------------------------*/
@@ -3413,8 +3417,7 @@ void loop()
       #if NZHS_HAS_LED_MATRIX
       if(g_R4MatrixDebugActive)
       {
-        turnAnnealerOff();
-        turnStartStopLedOff();
+        stopAnnealingOutputs();
         Serial.println(F("START BLOCKED: RESET TO EXIT MATRIX DEBUG"));
       }
       else
@@ -4151,8 +4154,7 @@ void loop()
         g_RunSafety.restartCurrentSamples++;
         if(psuCurrent_ma >= PSU_OVERCURRENT) //overloaded the PSU - may damage the ZVS converter
         {
-          turnAnnealerOff();
-          turnStartStopLedOff();
+          stopAnnealingOutputs();
           if(g_CasePerformance.referenceValid)
             recordCasePerformance(psuCurrent_ma, currentTime);
           else
@@ -4313,15 +4315,10 @@ void loop()
         display.println(F("ANNEALING"));
         if(CurrentSensorPresent)
         {
-          display.print(psuCurrent_ma/1000,DEC);
-          display.write('.');
-          display.print((psuCurrent_ma%1000)/100, DEC);
-          display.print(F("A  "));
+          printMilliValueTenths(psuCurrent_ma, 'A');
+          display.print(F("  "));
         }
-        display.print(remainingTime/1000, DEC);
-        display.write('.');
-        display.print((remainingTime%1000)/100, DEC);
-        display.write('s');
+        printDurationTenths(remainingTime);
         display.display();
       }
 
@@ -4455,10 +4452,7 @@ void loop()
         #else
           display.println(F("LOADING"));
         #endif
-        display.print(remainingTime/1000, DEC);
-        display.write('.');
-        display.print((remainingTime%1000)/100, DEC);
-        display.write('s');
+        printDurationTenths(remainingTime);
 
         #ifdef SHOW_CASE_COUNT
           display.setCursor(65, 0);
@@ -4624,8 +4618,7 @@ void loop()
     case STATE_PLATFORM_WARNING:
     {
       updateSystemState(g_SystemState);
-      turnAnnealerOff();
-      turnStartStopLedOff();
+      stopAnnealingOutputs();
       drawFaultScreen(F("R4 HW"), F("INIT ERR"));
     }
     break;
@@ -4855,7 +4848,7 @@ static void saveProfile(uint8_t const slot, tCartridgeProfile const * const prof
 static void loadProfileStopRule(uint8_t const slot)
 {
   uint16_t const address = EEPROM_ADDRESS_PROFILE_RULE_BASE + ((uint16_t)slot * 3);
-  g_UserSettings.targetEnergy_J = EEPROM.read(address) | ((uint16_t)EEPROM.read(address + 1) << 8);
+  g_UserSettings.targetEnergy_J = readEepromUint16(address);
   g_UserSettings.peakDropPercent = EEPROM.read(address + 2);
   if((g_UserSettings.stopType == PROFILE_STOP_ENERGY &&
       (g_UserSettings.targetEnergy_J == 0 || g_UserSettings.targetEnergy_J > ANALYSIS_MAX_ENERGY_J)) ||
@@ -4883,11 +4876,30 @@ static void saveProfileStopRule(uint8_t const slot, uint16_t const targetEnergy_
   };
   EEPROM.put(address, rule);
   #else
-  EEPROM.update(address, targetEnergy_J & 0xFF);
-  EEPROM.update(address + 1, targetEnergy_J >> 8);
+  updateEepromUint16(address, targetEnergy_J);
   EEPROM.update(address + 2, peakDropPercent);
   #endif
 }
+
+/*---------------------------------------------------------------------------*/
+/*! @brief      Read one little-endian 16-bit value from EEPROM.
+*//*-------------------------------------------------------------------------*/
+static uint16_t readEepromUint16(uint16_t const address)
+{
+  return EEPROM.read(address) | ((uint16_t)EEPROM.read(address + 1) << 8);
+}
+
+#if NZHS_PLATFORM_UNO_R3
+/*---------------------------------------------------------------------------*/
+/*! @brief      Update one little-endian 16-bit EEPROM value without rewrites.
+*//*-------------------------------------------------------------------------*/
+static void updateEepromUint16(uint16_t const address,
+                               uint16_t const value)
+{
+  EEPROM.update(address, value & 0xFF);
+  EEPROM.update(address + 1, value >> 8);
+}
+#endif
 
 /*---------------------------------------------------------------------------*/
 /*! @brief      Return the EEPROM address of a profile's compact reference.
@@ -4931,12 +4943,12 @@ static bool isProfileReferenceValid(uint8_t const slot)
   {
     return false;
   }
-  uint16_t const peakCurrent_ma = EEPROM.read(address + PROFILE_REFERENCE_PEAK_OFFSET) |
-    ((uint16_t)EEPROM.read(address + PROFILE_REFERENCE_PEAK_OFFSET + 1) << 8);
-  uint16_t const energy_J = EEPROM.read(address + PROFILE_REFERENCE_ENERGY_OFFSET) |
-    ((uint16_t)EEPROM.read(address + PROFILE_REFERENCE_ENERGY_OFFSET + 1) << 8);
-  uint16_t const duration_ms = EEPROM.read(address + PROFILE_REFERENCE_DURATION_OFFSET) |
-    ((uint16_t)EEPROM.read(address + PROFILE_REFERENCE_DURATION_OFFSET + 1) << 8);
+  uint16_t const peakCurrent_ma =
+    readEepromUint16(address + PROFILE_REFERENCE_PEAK_OFFSET);
+  uint16_t const energy_J =
+    readEepromUint16(address + PROFILE_REFERENCE_ENERGY_OFFSET);
+  uint16_t const duration_ms =
+    readEepromUint16(address + PROFILE_REFERENCE_DURATION_OFFSET);
   return peakCurrent_ma <= ANALYSIS_GRAPH_MAX_CURRENT_MA &&
          energy_J <= ANALYSIS_MAX_ENERGY_J &&
          duration_ms > 0 && duration_ms <= ANALYSIS_DURATION_MS;
@@ -5052,8 +5064,7 @@ static void saveProfileReference(uint8_t const slot)
   {
     uint8_t const lowByte = values[value] & 0xFF;
     uint8_t const highByte = values[value] >> 8;
-    EEPROM.update(address + offsets[value], lowByte);
-    EEPROM.update(address + offsets[value] + 1, highByte);
+    updateEepromUint16(address + offsets[value], values[value]);
     checksum ^= lowByte;
     checksum ^= highByte;
   }
@@ -5447,11 +5458,11 @@ static uint8_t graphSampleFromCurrent(uint16_t const current_ma)
 }
 
 /*---------------------------------------------------------------------------*/
-/*! @brief      Convert a stored current sample to its 32-pixel graph height.
+/*! @brief      Convert a 50 mA sample to a 625 mA-per-pixel height.
 *//*-------------------------------------------------------------------------*/
 static uint8_t graphHeightFromSample(uint8_t const sample)
 {
-  return ((uint16_t)sample * 31U) / ANALYSIS_GRAPH_MAX_SAMPLE;
+  return ((uint16_t)sample * ANALYSIS_GRAPH_CURRENT_STEP_MA + 312U) / 625U;
 }
 
 /*---------------------------------------------------------------------------*/
@@ -5473,6 +5484,19 @@ static void resetGraphCapture(uint32_t const currentTime, bool const isAnalysis)
   memset(g_Analysis.graphSamples, 0, sizeof(g_Analysis.graphSamples));
   g_Analysis.graphValid = false;
   g_Analysis.graphIsAnalysis = isAnalysis;
+}
+
+/*---------------------------------------------------------------------------*/
+/*! @brief      Finalise elapsed time and validity for a shared graph capture.
+*//*-------------------------------------------------------------------------*/
+static void finalizeGraphCapture(void)
+{
+  g_Analysis.elapsedTime_ms = millis() - g_Analysis.startTime;
+  if(g_Analysis.elapsedTime_ms > ANALYSIS_DURATION_MS)
+  {
+    g_Analysis.elapsedTime_ms = ANALYSIS_DURATION_MS;
+  }
+  g_Analysis.graphValid = g_Analysis.graphColumn != UINT8_MAX;
 }
 
 /*---------------------------------------------------------------------------*/
@@ -5578,10 +5602,9 @@ static void sampleAnalysisCurrent(uint32_t const currentTime)
 
   if(current_ma >= PSU_OVERCURRENT)
   {
-    turnAnnealerOff();
-    turnStartStopLedOff();
+    stopAnnealingOutputs();
     #if NZHS_HAS_WIFI
-    r4FinalizeGraphCapture();
+    finalizeGraphCapture();
     r4StoreWifiHistory(WIFI_HISTORY_OVERCURRENT, true, false);
     #endif
     updateSystemState(STATE_OVERCURRENT_WARNING);
@@ -5648,12 +5671,7 @@ static void recordCasePerformance(uint16_t const current_ma,
 *//*-------------------------------------------------------------------------*/
 static void finishCasePerformance(void)
 {
-  g_Analysis.elapsedTime_ms = millis() - g_Analysis.startTime;
-  if(g_Analysis.elapsedTime_ms > ANALYSIS_DURATION_MS)
-  {
-    g_Analysis.elapsedTime_ms = ANALYSIS_DURATION_MS;
-  }
-  g_Analysis.graphValid = g_Analysis.graphColumn != UINT8_MAX;
+  finalizeGraphCapture();
   g_Analysis.graphIsAnalysis = false;
   g_CasePerformance.currentCycleCompared = g_Analysis.graphValid;
 
@@ -5683,14 +5701,7 @@ static void finishCasePerformance(void)
   Serial.print(g_CasePerformance.energyPercent);
   Serial.print(F(",peak_pct="));
   Serial.print(g_CasePerformance.peakPercent);
-  Serial.print(FPSTR(TEXT_INPUT_ENERGY));
-  printAnalysisEnergy_J(g_Analysis.inputEnergy_mJ);
-  Serial.print(FPSTR(TEXT_ESTIMATED_ENERGY));
-  printAnalysisEnergy_J(estimatedEnergy_mJ(g_Analysis.inputEnergy_mJ));
-  Serial.print(FPSTR(TEXT_ENERGY_EFFICIENCY));
-  Serial.print(ANALYSIS_ENERGY_EFFICIENCY_PERCENT);
-  Serial.print(F(",peak_ma="));
-  Serial.println(g_Analysis.peakCurrent_ma);
+  printAnalysisSummary();
 }
 
 /*---------------------------------------------------------------------------*/
@@ -5706,12 +5717,7 @@ static void finishNormalCaseCapture(void)
     }
     return;
   }
-  g_Analysis.elapsedTime_ms = millis() - g_Analysis.startTime;
-  if(g_Analysis.elapsedTime_ms > ANALYSIS_DURATION_MS)
-  {
-    g_Analysis.elapsedTime_ms = ANALYSIS_DURATION_MS;
-  }
-  g_Analysis.graphValid = g_Analysis.graphColumn != UINT8_MAX;
+  finalizeGraphCapture();
   g_Analysis.graphIsAnalysis = false;
   g_CasePerformance.currentCycleCompared = false;
 }
@@ -5721,14 +5727,8 @@ static void finishNormalCaseCapture(void)
 *//*-------------------------------------------------------------------------*/
 static void finishAnalysis(bool const aborted)
 {
-  turnAnnealerOff();
-  turnStartStopLedOff();
-  g_Analysis.elapsedTime_ms = millis() - g_Analysis.startTime;
-  if(g_Analysis.elapsedTime_ms > ANALYSIS_DURATION_MS)
-  {
-    g_Analysis.elapsedTime_ms = ANALYSIS_DURATION_MS;
-  }
-  g_Analysis.graphValid = g_Analysis.graphColumn != UINT8_MAX;
+  stopAnnealingOutputs();
+  finalizeGraphCapture();
   #if NZHS_HAS_WIFI
   r4StoreWifiHistory(aborted ? WIFI_HISTORY_USER_ABORT : WIFI_HISTORY_ANALYSE,
                      true, false);
@@ -5742,6 +5742,15 @@ static void finishAnalysis(bool const aborted)
     Serial.print(F("ANALYSE,END,t_ms="));
   }
   Serial.print(g_Analysis.elapsedTime_ms);
+  printAnalysisSummary();
+  updateSystemState(STATE_ANALYSIS_RESULT);
+}
+
+/*---------------------------------------------------------------------------*/
+/*! @brief      Print common energy and peak fields at the end of a run.
+*//*-------------------------------------------------------------------------*/
+static void printAnalysisSummary(void)
+{
   Serial.print(FPSTR(TEXT_INPUT_ENERGY));
   printAnalysisEnergy_J(g_Analysis.inputEnergy_mJ);
   Serial.print(FPSTR(TEXT_ESTIMATED_ENERGY));
@@ -5750,7 +5759,6 @@ static void finishAnalysis(bool const aborted)
   Serial.print(ANALYSIS_ENERGY_EFFICIENCY_PERCENT);
   Serial.print(F(",peak_ma="));
   Serial.println(g_Analysis.peakCurrent_ma);
-  updateSystemState(STATE_ANALYSIS_RESULT);
 }
 
 /*---------------------------------------------------------------------------*/
@@ -5758,8 +5766,7 @@ static void finishAnalysis(bool const aborted)
 *//*-------------------------------------------------------------------------*/
 static void openAnalysisDropGate(void)
 {
-  turnAnnealerOff();
-  turnStartStopLedOff();
+  stopAnnealingOutputs();
   drawAnalysisGraph();
   openDropGate();
   setSystemTimeTarget(millis() + ANALYSIS_GATE_OPEN_PERIOD_MS);
@@ -6064,10 +6071,7 @@ static void drawTimePanel(bool const selected)
   if(selected) display.write('>');
   display.setTextSize(2);
   display.setCursor(0,16);
-  display.print(g_UserSettings.annealTime_ms/1000, DEC);
-  display.write('.');
-  display.print((g_UserSettings.annealTime_ms%1000)/100, DEC);
-  display.write('s');
+  printDurationTenths(g_UserSettings.annealTime_ms);
   display.setTextSize(1);
 }
 
@@ -6154,10 +6158,7 @@ static void drawAnalysisConfigScreen(void)
       if(g_AnalysisConfig.stopType == PROFILE_STOP_TIME)
       {
         display.print(F("TIME: "));
-        display.print(g_AnalysisConfig.stopTime_ms / 1000);
-        display.write('.');
-        display.print((g_AnalysisConfig.stopTime_ms % 1000) / 100);
-        display.write('s');
+        printDurationTenths(g_AnalysisConfig.stopTime_ms);
       }
       else
       {
@@ -6170,10 +6171,7 @@ static void drawAnalysisConfigScreen(void)
     {
       setTextSelected(g_AnalysisConfig.selection == item);
       display.print(F("MAX TIME: "));
-      display.print(g_AnalysisConfig.maxTime_ms / 1000);
-      display.write('.');
-      display.print((g_AnalysisConfig.maxTime_ms % 1000) / 100);
-      display.write('s');
+      printDurationTenths(g_AnalysisConfig.maxTime_ms);
     }
     else if(item == ANALYSIS_CONFIG_PROFILE)
     {
@@ -6204,6 +6202,17 @@ static void beginFullWidthScreen(void)
 {
   display.clearDisplay();
   display.setTextSize(1);
+  display.setTextColor(WHITE);
+}
+
+/*---------------------------------------------------------------------------*/
+/*! @brief      Draw the fixed inverted Back action on the bottom row.
+*//*-------------------------------------------------------------------------*/
+static void drawBottomBackItem(void)
+{
+  display.setCursor(0, 24);
+  display.setTextColor(BLACK, WHITE);
+  display.print(FPSTR(TEXT_BACK_ITEM));
   display.setTextColor(WHITE);
 }
 
@@ -6240,35 +6249,119 @@ static void drawAnalysisLoadScreen(void)
 }
 
 /*---------------------------------------------------------------------------*/
-/*! @brief      Draw captured points, optionally over a dotted profile curve.
+/*! @brief      Draw 2.5 A horizontal and one-second vertical dotted guides.
 *//*-------------------------------------------------------------------------*/
-static void drawCapturedGraph(bool const withReference)
+static void drawGraphGrid(uint8_t const plotStart,
+                          uint8_t const plotEnd,
+                          uint16_t const secondWidth,
+                          uint16_t const duration_ms)
 {
+  for(uint16_t current_ma = 0;
+      current_ma <= ANALYSIS_GRAPH_MAX_CURRENT_MA;
+      current_ma += ANALYSIS_GRAPH_GRID_CURRENT_MA)
+  {
+    uint8_t const y = ANALYSIS_GRAPH_PLOT_BOTTOM - graphHeightFromSample(
+      graphSampleFromCurrent(current_ma));
+    for(uint8_t x = plotStart; x <= plotEnd;
+        x += ANALYSIS_GRAPH_HORIZONTAL_DOT_SPACING)
+    {
+      display.drawPixel(x, y, WHITE);
+    }
+  }
+  for(uint16_t time_ms = 0;
+      time_ms <= duration_ms;
+      time_ms += ANALYSIS_GRAPH_GRID_TIME_MS)
+  {
+    uint8_t const x = plotStart +
+      ((uint32_t)time_ms * secondWidth) / ANALYSIS_GRAPH_GRID_TIME_MS;
+    for(uint8_t y = ANALYSIS_GRAPH_PLOT_TOP;
+        y <= ANALYSIS_GRAPH_PLOT_BOTTOM;
+        y += ANALYSIS_GRAPH_VERTICAL_DOT_SPACING)
+    {
+      display.drawPixel(x, y, WHITE);
+    }
+  }
+}
+
+/*---------------------------------------------------------------------------*/
+/*! @brief      Draw captured points on the same centred scale as the grid.
+    @param      scaleToWidth Scale a completed trace using its actual duration.
+*//*-------------------------------------------------------------------------*/
+static void drawCapturedGraph(bool const withReference,
+                              bool const scaleToWidth)
+{
+  uint16_t const duration_ms = scaleToWidth ?
+    g_Analysis.elapsedTime_ms : ANALYSIS_DURATION_MS;
+  uint16_t const scaleDuration_ms = duration_ms < ANALYSIS_SAMPLE_PERIOD_MS ?
+    ANALYSIS_SAMPLE_PERIOD_MS : duration_ms;
+  uint16_t secondWidth =
+    ((uint32_t)SCREEN_WIDTH * ANALYSIS_GRAPH_GRID_TIME_MS) /
+    scaleDuration_ms;
+  secondWidth = (secondWidth / ANALYSIS_GRAPH_HORIZONTAL_DOT_SPACING) *
+                ANALYSIS_GRAPH_HORIZONTAL_DOT_SPACING;
+  if(secondWidth < ANALYSIS_GRAPH_HORIZONTAL_DOT_SPACING)
+  {
+    secondWidth = ANALYSIS_GRAPH_HORIZONTAL_DOT_SPACING;
+  }
+  uint16_t plotSpan =
+    ((uint32_t)scaleDuration_ms * secondWidth + 500U) /
+    ANALYSIS_GRAPH_GRID_TIME_MS;
+  if(plotSpan > SCREEN_WIDTH - 1)
+  {
+    plotSpan = SCREEN_WIDTH - 1;
+  }
+  uint8_t const plotStart = (SCREEN_WIDTH - plotSpan) / 2;
+  uint8_t const plotEnd = plotStart + plotSpan;
+
   display.clearDisplay();
+  drawGraphGrid(plotStart, plotEnd, secondWidth, duration_ms);
   if(withReference)
   {
     for(uint8_t sample = 0; sample < PROFILE_REFERENCE_SAMPLE_COUNT; sample++)
     {
-      uint8_t const height = graphHeightFromSample(
+      uint16_t const sampleTime_ms = (uint16_t)sample * 125U;
+      if(sampleTime_ms > duration_ms)
+      {
+        break;
+      }
+      uint8_t const x = plotStart +
+        ((uint32_t)sample * secondWidth) / 8U;
+      uint8_t const y = ANALYSIS_GRAPH_PLOT_BOTTOM - graphHeightFromSample(
         readProfileReferenceSample(g_CasePerformance.resultSlot, sample));
-      display.drawPixel(sample * 2, 31 - height, WHITE);
+      display.drawPixel(x, y, WHITE);
     }
   }
   if(g_Analysis.graphColumn != UINT8_MAX)
   {
-    uint8_t previousY = 31 - graphHeightFromSample(g_Analysis.graphSamples[0]);
+    uint8_t previousX = plotStart;
+    uint8_t previousY = ANALYSIS_GRAPH_PLOT_BOTTOM -
+      graphHeightFromSample(g_Analysis.graphSamples[0]);
     for(uint8_t column = 0; column <= g_Analysis.graphColumn; column++)
     {
-      uint8_t const y = 31 - graphHeightFromSample(g_Analysis.graphSamples[column]);
-      display.drawPixel(column, y, WHITE);
-      if(withReference && column > 0)
+      uint8_t const x = plotStart +
+        ((uint32_t)column * secondWidth) / 16U;
+      uint8_t const y = ANALYSIS_GRAPH_PLOT_BOTTOM - graphHeightFromSample(
+        g_Analysis.graphSamples[column]);
+      display.drawPixel(x, y, WHITE);
+      if((withReference || scaleToWidth) && column > 0)
       {
+        display.fillRect(previousX, previousY, x - previousX + 1, 1, WHITE);
         uint8_t const top = y < previousY ? y : previousY;
-        uint8_t const height = y > previousY ? y - previousY + 1 : previousY - y + 1;
-        display.drawFastVLine(column, top, height, WHITE);
+        uint8_t const height = y > previousY ? y - previousY + 1 :
+                                                  previousY - y + 1;
+        display.drawFastVLine(x, top, height, WHITE);
       }
+      previousX = x;
       previousY = y;
     }
+  }
+  if(scaleToWidth && g_Analysis.graphColumn != UINT8_MAX)
+  {
+    display.fillRect(0, 0, 24, 8, BLACK);
+    display.setTextSize(1);
+    display.setTextColor(WHITE);
+    display.setCursor(0, 0);
+    printDurationTenths(g_Analysis.elapsedTime_ms);
   }
 }
 
@@ -6282,13 +6375,19 @@ static void drawGraphMeasurements(void)
   display.setTextSize(1);
   display.setTextColor(WHITE);
   display.fillRect(42, 24, 42, 8, BLACK);
+  display.fillRect(ANALYSIS_ENERGY_X, 24, SCREEN_WIDTH - ANALYSIS_ENERGY_X, 8, BLACK);
+  drawGraphMetrics(g_Analysis.graphCurrent_ma, energy_J);
+}
+
+/*---------------------------------------------------------------------------*/
+/*! @brief      Draw the common graph current and estimated-energy fields.
+*//*-------------------------------------------------------------------------*/
+static void drawGraphMetrics(uint16_t const current_ma,
+                             uint16_t const energy_J)
+{
   display.setCursor(42, 24);
   display.print(F("A:"));
-  display.print(g_Analysis.graphCurrent_ma / 1000);
-  display.write('.');
-  display.print((g_Analysis.graphCurrent_ma % 1000) / 100);
-  display.write('A');
-  display.fillRect(ANALYSIS_ENERGY_X, 24, SCREEN_WIDTH - ANALYSIS_ENERGY_X, 8, BLACK);
+  printMilliValueTenths(current_ma, 'A');
   display.setCursor(ANALYSIS_ENERGY_X, 24);
   display.print(F("~J"));
   display.print(energy_J);
@@ -6299,7 +6398,7 @@ static void drawGraphMeasurements(void)
 *//*-------------------------------------------------------------------------*/
 static void drawAnalysisGraph(void)
 {
-  drawCapturedGraph(false);
+  drawCapturedGraph(false, false);
   drawGraphMeasurements();
   display.display();
 }
@@ -6310,7 +6409,8 @@ static void drawAnalysisGraph(void)
 static void drawCasePerformanceGraph(tPerformanceFooter const footer,
                                      uint16_t const remainingTime_ms)
 {
-  drawCapturedGraph(g_CasePerformance.currentCycleCompared);
+  drawCapturedGraph(g_CasePerformance.currentCycleCompared,
+                    footer != PERFORMANCE_FOOTER_LIVE);
   if(footer == PERFORMANCE_FOOTER_LIVE)
   {
     drawGraphMeasurements();
@@ -6341,10 +6441,7 @@ static void drawCasePerformanceGraph(tPerformanceFooter const footer,
   else
   {
     display.print(g_CasePerformance.currentCycleCompared ? F("% NEXT ") : F(" NEXT "));
-    display.print(remainingTime_ms / 1000);
-    display.write('.');
-    display.print((remainingTime_ms % 1000) / 100);
-    display.write('s');
+    printDurationTenths(remainingTime_ms);
   }
   display.display();
 }
@@ -6365,18 +6462,9 @@ static void drawAnalysisStatus(bool const dumping)
   else
   {
     display.fillRect(0, 24, SCREEN_WIDTH, 8, BLACK);
-    display.setCursor(0, 24);
-    display.setTextColor(BLACK, WHITE);
-    display.print(FPSTR(TEXT_BACK_ITEM));
-    display.setTextColor(WHITE);
-    display.print(F(" A:"));
-    display.print(g_Analysis.peakCurrent_ma / 1000);
-    display.write('.');
-    display.print((g_Analysis.peakCurrent_ma % 1000) / 100);
-    display.write('A');
-    display.setCursor(ANALYSIS_ENERGY_X, 24);
-    display.print(F("~J"));
-    display.print(estimatedEnergy_J(g_Analysis.inputEnergy_mJ));
+    drawBottomBackItem();
+    drawGraphMetrics(g_Analysis.peakCurrent_ma,
+                     estimatedEnergy_J(g_Analysis.inputEnergy_mJ));
   }
   display.display();
 }
@@ -6415,6 +6503,28 @@ static void printAnalysisEnergy_J(uint32_t const energy_mJ)
     Serial.write('0');
   }
   Serial.print(fractional_mJ);
+}
+
+/*---------------------------------------------------------------------------*/
+/*! @brief      Print a millisecond duration with one decimal place.
+*//*-------------------------------------------------------------------------*/
+static void printDurationTenths(uint16_t const duration_ms)
+{
+  display.print(duration_ms / 1000);
+  display.write('.');
+  display.print((duration_ms % 1000) / 100);
+  display.write('s');
+}
+
+/*---------------------------------------------------------------------------*/
+/*! @brief      Print a milli-unit measurement as one decimal plus its unit.
+*//*-------------------------------------------------------------------------*/
+static void printMilliValueTenths(uint16_t const value, char const unit)
+{
+  display.print(value / 1000);
+  display.write('.');
+  display.print((value % 1000) / 100);
+  display.write(unit);
 }
 
 /*---------------------------------------------------------------------------*/
@@ -6610,10 +6720,7 @@ static void drawProfilesScreen(void)
   if(g_UserSettings.profileSlot >= PROFILE_COUNT)
   {
     display.print(FPSTR(TEXT_PROFILES));
-    display.setCursor(0, 24);
-    display.setTextColor(BLACK, WHITE);
-    display.print(FPSTR(TEXT_BACK_ITEM));
-    display.setTextColor(WHITE);
+    drawBottomBackItem();
   }
   else
   {
@@ -6673,19 +6780,17 @@ static void drawProfileReferenceScreen(void)
 {
   uint16_t const address = getProfileReferenceAddress(g_UserSettings.profileSlot);
   uint16_t const peakCurrent_ma =
-    EEPROM.read(address + PROFILE_REFERENCE_PEAK_OFFSET) |
-    ((uint16_t)EEPROM.read(address + PROFILE_REFERENCE_PEAK_OFFSET + 1) << 8);
+    readEepromUint16(address + PROFILE_REFERENCE_PEAK_OFFSET);
   uint16_t const energy_J =
-    EEPROM.read(address + PROFILE_REFERENCE_ENERGY_OFFSET) |
-    ((uint16_t)EEPROM.read(address + PROFILE_REFERENCE_ENERGY_OFFSET + 1) << 8);
+    readEepromUint16(address + PROFILE_REFERENCE_ENERGY_OFFSET);
 
   display.clearDisplay();
-  uint8_t previousY = 31 - graphHeightFromSample(
+  uint8_t previousY = ANALYSIS_GRAPH_PLOT_BOTTOM - graphHeightFromSample(
     readProfileReferenceSample(g_UserSettings.profileSlot, 0));
   for(uint8_t sample = 0; sample < PROFILE_REFERENCE_SAMPLE_COUNT; sample++)
   {
     uint8_t const x = sample * 2;
-    uint8_t const y = 31 - graphHeightFromSample(
+    uint8_t const y = ANALYSIS_GRAPH_PLOT_BOTTOM - graphHeightFromSample(
       readProfileReferenceSample(g_UserSettings.profileSlot, sample));
     uint8_t const top = y < previousY ? y : previousY;
     uint8_t const height = y > previousY ? y - previousY + 1 : previousY - y + 1;
@@ -6696,19 +6801,8 @@ static void drawProfileReferenceScreen(void)
 
   display.fillRect(0, 24, SCREEN_WIDTH, 8, BLACK);
   display.setTextSize(1);
-  display.setCursor(0, 24);
-  display.setTextColor(BLACK, WHITE);
-  display.print(FPSTR(TEXT_BACK_ITEM));
-  display.setTextColor(WHITE);
-  display.setCursor(42, 24);
-  display.print(F("A:"));
-  display.print(peakCurrent_ma / 1000);
-  display.write('.');
-  display.print((peakCurrent_ma % 1000) / 100);
-  display.write('A');
-  display.setCursor(84, 24);
-  display.print(F("~J"));
-  display.print(energy_J);
+  drawBottomBackItem();
+  drawGraphMetrics(peakCurrent_ma, energy_J);
   display.display();
 }
 
@@ -6722,7 +6816,7 @@ static void drawLastCaseScreen(void)
     returnToStoppedScreen();
     return;
   }
-  drawCapturedGraph(g_CasePerformance.currentCycleCompared);
+  drawCapturedGraph(g_CasePerformance.currentCycleCompared, true);
   drawAnalysisStatus(false);
 }
 
@@ -6751,8 +6845,7 @@ static void drawProfileNameEditScreen(void)
   }
   else if(g_UserSettings.profileNameCursor == PROFILE_NAME_LENGTH + 1)
   {
-    display.setTextColor(BLACK, WHITE);
-    display.print(FPSTR(TEXT_BACK_ITEM));
+    drawBottomBackItem();
   }
   else
   {
@@ -6857,10 +6950,7 @@ static void drawDiagnosticsScreen(void)
   display.write(CurrentSensorPresent ? 'Y' : 'N');
   display.setCursor(0,16);
   drawResetDiagnostics();
-  display.setCursor(0,24);
-  display.setTextColor(BLACK, WHITE);
-  display.print(FPSTR(TEXT_BACK_ITEM));
-  display.setTextColor(WHITE);
+  drawBottomBackItem();
   display.display();
 }
 
@@ -6891,10 +6981,7 @@ static void drawInfoScreen(void)
       display.print(F("BASE: "));
       if(g_RunSafety.baselineCurrentCycles >= LOW_CURRENT_BASELINE_CYCLES)
       {
-        display.print(g_RunSafety.baselineCurrent_ma/1000, DEC);
-        display.write('.');
-        display.print((g_RunSafety.baselineCurrent_ma%1000)/100, DEC);
-        display.write('A');
+        printMilliValueTenths(g_RunSafety.baselineCurrent_ma, 'A');
       }
       else
       {
@@ -6905,10 +6992,7 @@ static void drawInfoScreen(void)
     {
       refreshSupplyVoltage();
       display.print(F("5V: "));
-      display.print(g_SupplyVoltage_mv/1000, DEC);
-      display.write('.');
-      display.print((g_SupplyVoltage_mv%1000)/100, DEC);
-      display.write('V');
+      printMilliValueTenths(g_SupplyVoltage_mv, 'V');
     }
     else if(item == 4)
     {
@@ -6932,10 +7016,7 @@ static void drawInfoScreen(void)
       else display.print(F("--"));
     }
   }
-  display.setCursor(0,24);
-  display.setTextColor(BLACK, WHITE);
-  display.print(FPSTR(TEXT_BACK_ITEM));
-  display.setTextColor(WHITE);
+  drawBottomBackItem();
   display.display();
   #else
   beginFullWidthScreen();
@@ -6958,10 +7039,7 @@ static void drawInfoScreen(void)
   display.print(F("BASE: "));
   if(g_RunSafety.baselineCurrentCycles >= LOW_CURRENT_BASELINE_CYCLES)
   {
-    display.print(g_RunSafety.baselineCurrent_ma/1000, DEC);
-    display.write('.');
-    display.print((g_RunSafety.baselineCurrent_ma%1000)/100, DEC);
-    display.write('A');
+    printMilliValueTenths(g_RunSafety.baselineCurrent_ma, 'A');
   }
   else
   {
@@ -6973,10 +7051,7 @@ static void drawInfoScreen(void)
     refreshSupplyVoltage();
     display.setCursor(0, 24 - (g_InfoScreenScroll * 8));
     display.print(F("5V: "));
-    display.print(g_SupplyVoltage_mv/1000, DEC);
-    display.write('.');
-    display.print((g_SupplyVoltage_mv%1000)/100, DEC);
-    display.write('V');
+    printMilliValueTenths(g_SupplyVoltage_mv, 'V');
   }
 
   if(g_InfoScreenScroll > 1)
@@ -6985,10 +7060,7 @@ static void drawInfoScreen(void)
     display.print(F("FW: "));
     display.print(SOFTWARE_VERSION);
   }
-  display.setCursor(0,24);
-  display.setTextColor(BLACK, WHITE);
-  display.print(FPSTR(TEXT_BACK_ITEM));
-  display.setTextColor(WHITE);
+  drawBottomBackItem();
   display.display();
   #endif
 }
@@ -7202,6 +7274,16 @@ static void turnStartStopLedOff(void)
 {
   digitalWrite(g_StartStopLedPin, LOW);
 }
+
+/*---------------------------------------------------------------------------*/
+/*! @brief      Disable heating before clearing its operator indicator.
+*//*-------------------------------------------------------------------------*/
+static void stopAnnealingOutputs(void)
+{
+  turnAnnealerOff();
+  turnStartStopLedOff();
+}
+
 /*---------------------------------------------------------------------------*/
 /*! @brief      Turn the start/stop LED on.
 *//*-------------------------------------------------------------------------*/
