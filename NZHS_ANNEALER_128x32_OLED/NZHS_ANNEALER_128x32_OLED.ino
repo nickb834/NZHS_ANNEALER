@@ -174,7 +174,7 @@ static const char * const PROFILE_ACTION_TEXT[] PROGMEM = {
   TEXT_REFERENCE_ITEM, TEXT_BACK_ITEM
 };
 static const char * const STOPPED_MENU_TEXT[] PROGMEM = {
-  TEXT_SETTINGS_ITEM, TEXT_PROFILES_ITEM, TEXT_ANALYSE_ITEM, TEXT_REVIEW_ITEM,
+  TEXT_REVIEW_ITEM, TEXT_SETTINGS_ITEM, TEXT_PROFILES_ITEM, TEXT_ANALYSE_ITEM,
   TEXT_INFO_ITEM, TEXT_DIAGNOSTICS_ITEM
 };
 
@@ -552,10 +552,10 @@ typedef enum tStoppedScreenSelection : uint8_t
 {
   STOPPED_SCREEN_TIME = 0,
   STOPPED_SCREEN_MODE,
+  STOPPED_SCREEN_LAST_CASE,
   STOPPED_SCREEN_SETTINGS,
   STOPPED_SCREEN_PROFILES,
   STOPPED_SCREEN_ANALYSE,
-  STOPPED_SCREEN_LAST_CASE,
   STOPPED_SCREEN_INFO,
   STOPPED_SCREEN_DIAGNOSTICS,
   STOPPED_SCREEN_SELECTION_COUNT,
@@ -5243,7 +5243,14 @@ static void saveEditedProfileName(void)
 *//*-------------------------------------------------------------------------*/
 static void advanceStoppedScreenSelection(void)
 {
-  g_UserSettings.stoppedScreenSelection = (tStoppedScreenSelection)((g_UserSettings.stoppedScreenSelection + 1) % STOPPED_SCREEN_SELECTION_COUNT);
+  tStoppedScreenSelection selection = (tStoppedScreenSelection)(
+    (g_UserSettings.stoppedScreenSelection + 1) % STOPPED_SCREEN_SELECTION_COUNT);
+  if(selection == STOPPED_SCREEN_LAST_CASE &&
+     (!g_Analysis.graphValid || g_Analysis.graphIsAnalysis))
+  {
+    selection = STOPPED_SCREEN_SETTINGS;
+  }
+  g_UserSettings.stoppedScreenSelection = selection;
 }
 
 /*---------------------------------------------------------------------------*/
@@ -5850,7 +5857,10 @@ static void updateStoppedScreenSetting(bool const rapidTimeAdjust)
   }
   else if(g_UserSettings.stoppedScreenSelection == STOPPED_SCREEN_LAST_CASE)
   {
-    updateSystemState(STATE_LAST_CASE);
+    if(g_Analysis.graphValid && !g_Analysis.graphIsAnalysis)
+    {
+      updateSystemState(STATE_LAST_CASE);
+    }
   }
   else if(g_UserSettings.stoppedScreenSelection == STOPPED_SCREEN_SETTINGS)
   {
@@ -6426,7 +6436,18 @@ static void drawStoppedScreen(bool const fanIsOn, int16_t const temperature, uin
   }
   else
   {
-    uint8_t item = g_UserSettings.stoppedScreenSelection - 1;
+    bool const reviewAvailable = g_Analysis.graphValid && !g_Analysis.graphIsAnalysis;
+    if(!reviewAvailable &&
+       g_UserSettings.stoppedScreenSelection == STOPPED_SCREEN_LAST_CASE)
+    {
+      g_UserSettings.stoppedScreenSelection = STOPPED_SCREEN_SETTINGS;
+    }
+    uint8_t menuIndex = g_UserSettings.stoppedScreenSelection - STOPPED_SCREEN_LAST_CASE;
+    if(!reviewAvailable)
+    {
+      menuIndex--;
+    }
+    uint8_t item = menuIndex + 1;
     for(uint8_t row = 0; row < 4; row++, item++)
     {
       uint8_t const y = row * 8;
@@ -6437,7 +6458,9 @@ static void drawStoppedScreen(bool const fanIsOn, int16_t const temperature, uin
       {
         display.setCursor(RIGHT_PANEL_X, y);
         setTextSelected(row == 3);
-        display.print(FPSTR(pgm_read_ptr(&STOPPED_MENU_TEXT[item - 4])));
+        uint8_t const visibleMenu = item - 4;
+        uint8_t const actualMenu = visibleMenu + (reviewAvailable ? 0 : 1);
+        display.print(FPSTR(pgm_read_ptr(&STOPPED_MENU_TEXT[actualMenu])));
       }
     }
     display.setTextColor(WHITE);
@@ -6694,22 +6717,13 @@ static void drawProfileReferenceScreen(void)
 *//*-------------------------------------------------------------------------*/
 static void drawLastCaseScreen(void)
 {
-  if(g_Analysis.graphValid && !g_Analysis.graphIsAnalysis)
+  if(!g_Analysis.graphValid || g_Analysis.graphIsAnalysis)
   {
-    drawCapturedGraph(g_CasePerformance.currentCycleCompared);
-    drawAnalysisStatus(false);
+    returnToStoppedScreen();
     return;
   }
-  beginFullWidthScreen();
-  display.setCursor(0, 0);
-  display.print(FPSTR(TEXT_REVIEW_ITEM));
-  display.setCursor(0, 8);
-  display.print(F("NO DATA"));
-  display.setCursor(0, 24);
-  display.setTextColor(BLACK, WHITE);
-  display.print(FPSTR(TEXT_BACK_ITEM));
-  display.setTextColor(WHITE);
-  display.display();
+  drawCapturedGraph(g_CasePerformance.currentCycleCompared);
+  drawAnalysisStatus(false);
 }
 
 /*---------------------------------------------------------------------------*/

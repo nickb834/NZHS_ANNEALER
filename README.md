@@ -22,8 +22,9 @@ The OLED screen retains its original layout: anneal time on the left;
 fan state, operating mode, case count, and temperature on the right.
 
 Press MODE to move through `TIME`, `MODE`, `SETTINGS`, `PROFILES`, `ANALYSE`,
-`REVIEW`, `INFO`, and `DIAGNOSTICS`; press UP to open the highlighted menu.
-Representative home screens are shown below.
+`INFO`, and `DIAGNOSTICS`; press UP to open the highlighted menu. After a normal
+current graph has been captured, `REVIEW >` appears directly after `MODE` and
+before `SETTINGS`. Representative home screens are shown below.
 
 | TIME | MODE | SETTINGS | PROFILES |
 | --- | --- | --- | --- |
@@ -183,9 +184,9 @@ ENERGY, or PEAK DROP rule still determines when annealing stops.
 
 Every normal run with a detected current sensor captures its current graph,
 including one-shot and free-run cases without a profile reference. `REVIEW >`
-shows the latest trace with peak current and estimated `~J`; a loaded reference
-is overlaid as a dotted line. The buffer is session-only and is replaced by the
-next normal case or Analyse capture.
+then appears above `SETTINGS` and shows the latest trace with peak current and
+estimated `~J`; a loaded reference is overlaid as a dotted line. The buffer is
+session-only and is replaced by the next normal case or Analyse capture.
 
 Holding MODE for at least 300 ms during an analysis is the manual safety abort.
 It immediately turns the annealing output off and opens the drop gate for five
@@ -409,7 +410,7 @@ SW version 4.2.0
   supply value instead of an implicit 48 V stop-rule factor.
 - Invalidated profiles and Analyse references saved by earlier firmware so raw
   and estimated ENERGY targets cannot be confused.
-- Added universal current-graph capture and a home `REVIEW >` screen;
+- Added universal current-graph capture and a conditional home `REVIEW >` screen;
   renamed profile `PERFORMANCE >` to `REFERENCE >` so it shows saved data only.
 - Added visible WiFi monitor and setup controls under Settings.
 - Added persistent LAN credentials, automatic reconnect and setup-AP fallback.

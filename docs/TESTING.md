@@ -135,8 +135,10 @@ in [R4_WIFI_MONITOR.md](R4_WIFI_MONITOR.md).
 
 ## Controls and menus
 
-- Check TIME → MODE → SETTINGS → PROFILES → ANALYSE → REVIEW → INFO →
-  DIAGNOSTICS → TIME navigation on the stopped screen.
+- Before any normal capture, check TIME → MODE → SETTINGS → PROFILES → ANALYSE
+  → INFO → DIAGNOSTICS → TIME navigation on the stopped screen.
+- After a normal capture, check TIME → MODE → REVIEW → SETTINGS → PROFILES →
+  ANALYSE → INFO → DIAGNOSTICS → TIME.
 - Confirm UP opens each selected menu and every `BACK >` returns to the
   originating stopped-screen item.
 - Confirm INFO scrolls with MODE and returns with UP.
@@ -234,8 +236,8 @@ in [R4_WIFI_MONITOR.md](R4_WIFI_MONITOR.md).
   under REVIEW with peak current and estimated `~J`.
 - With a loaded reference, confirm REVIEW overlays the dotted reference while
   profile REFERENCE continues to show only the saved curve and aggregate values.
-- Open REVIEW before any normal capture and confirm `NO DATA`; press UP and
-  confirm it returns to the REVIEW home selection.
+- Before any normal capture, confirm REVIEW is absent. After capture, open
+  REVIEW and press UP; confirm it returns to the REVIEW home selection.
 - From the second case, confirm a no-current/low-current safety fault takes
   precedence over comparison reporting and prevents the gate opening while the
   captured fault trace remains available under REVIEW.
